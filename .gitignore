@@ -1,0 +1,55 @@
+# Dependencies
+node_modules/
+.pnp
+.pnp.js
+
+# Build outputs
+dist/
+build/
+*.js.map
+*.d.ts.map
+
+# Rust / Tauri
+target/
+packages/dashboard/src-tauri/target/
+
+# Environment & secrets
+.env
+.env.*
+*.env
+secrets/
+*.key
+*.pem
+*.p12
+
+# Nexus runtime data (never commit user data)
+.nexus/
+nexus.db
+nexus.db-shm
+nexus.db-wal
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# IDE
+.vscode/settings.json
+.idea/
+*.swp
+*.swo
+
+# Logs
+*.log
+logs/
+
+# Test coverage
+coverage/
+.nyc_output/
+
+# pnpm
+.pnpm-store/
+pnpm-lock.yaml.bak
+
+# TypeScript cache
+*.tsbuildinfo

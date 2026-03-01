@@ -1,0 +1,16 @@
+{
+  "mcpServers": {
+    "nexus-local": {
+      "type": "stdio",
+      "command": "node",
+      "args": ["packages/mcp/dist/index.js"],
+      "description": "Nexus MCP server (local dev build — run pnpm build first)"
+    },
+    "sequential-thinking": {
+      "type": "stdio",
+      "command": "cmd",
+      "args": ["/c", "npx", "-y", "@modelcontextprotocol/server-sequential-thinking"],
+      "description": "Better planning and multi-step reasoning"
+    }
+  }
+}
