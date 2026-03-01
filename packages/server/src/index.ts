@@ -17,3 +17,6 @@ export function startServer(port = DEFAULT_PORT): void {
 }
 
 export { app };
+
+// Auto-start when run directly: node dist/index.js
+startServer();
