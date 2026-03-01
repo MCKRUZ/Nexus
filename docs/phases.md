@@ -2,7 +2,7 @@
 
 Track current phase here. Update when transitioning.
 
-## Current Phase: 5 — Dashboard
+## Current Phase: 6 — Polish & Release
 
 ---
 
@@ -45,16 +45,20 @@ Track current phase here. Update when transitioning.
 - [x] Sync on demand (`nexus sync`) + sync all (`nexus sync --all`)
 
 ## Phase 5: Dashboard (Week 5–7)
-**Status: NOT STARTED**
+**Status: COMPLETE** ✓
 
-- [ ] Tauri app scaffolding (`packages/dashboard/`)
-- [ ] Projects overview page
-- [ ] Decision graph (D3 force-directed)
-- [ ] Activity feed (real-time via IPC)
-- [ ] Pattern library
-- [ ] Conflict alerts with resolution workflow
-- [ ] Session monitor
-- [ ] Preferences editor
+- [x] Hono HTTP server at `localhost:47340` (`packages/server/`)
+- [x] Full REST API: stats, projects, decisions, patterns, preferences, conflicts, query
+- [x] React 18 + Vite dashboard (`packages/dashboard/`)
+- [x] Overview page — stats cards, recent decisions, active conflicts
+- [x] Projects page — list + per-project decisions & patterns detail
+- [x] Decision graph — D3 force-directed visualization
+- [x] Patterns library — searchable, frequency bars
+- [x] Conflicts page — open/potential/resolved with refresh
+- [x] Preferences editor — list + set new preferences
+- [x] Global search — full-text across decisions, patterns, preferences
+- [x] Server status indicator in sidebar
+- [x] Proxy `/api` → `localhost:47340` in Vite dev server
 
 ## Phase 6: Polish & Release (Week 8)
 **Status: NOT STARTED**

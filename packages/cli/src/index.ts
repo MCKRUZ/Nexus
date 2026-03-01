@@ -7,6 +7,7 @@ import { decisionCommand } from './commands/decision.js';
 import { statusCommand } from './commands/status.js';
 import { hookCommand } from './commands/hook.js';
 import { syncCommand } from './commands/sync.js';
+import { serveCommand } from './commands/serve.js';
 
 const program = new Command();
 
@@ -22,6 +23,7 @@ program.addCommand(decisionCommand());
 program.addCommand(statusCommand());
 program.addCommand(hookCommand());
 program.addCommand(syncCommand());
+program.addCommand(serveCommand());
 
 program.parseAsync(process.argv).catch((err: unknown) => {
   console.error(err instanceof Error ? err.message : err);
