@@ -7,3 +7,4 @@ export * from './config/index.js';
 export * from './service.js';
 export * from './extraction/index.js';
 export * from './sync/index.js';
+export * from './native/session-reader.js';

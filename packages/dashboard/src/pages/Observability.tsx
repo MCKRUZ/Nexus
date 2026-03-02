@@ -8,9 +8,13 @@ import {
   type LangfuseObservation,
   type LangfuseScore,
   type LangfuseSession,
+  type NativeSession,
+  type NativeSessionDetail,
+  type NativeEvent,
+  type NativeStats,
 } from '../api.js';
 
-type Tab = 'overview' | 'traces' | 'sessions' | 'observations' | 'users';
+type Tab = 'overview' | 'native' | 'traces' | 'sessions' | 'observations' | 'users';
 type Range = '7d' | '30d' | '90d';
 type SortDir = 'asc' | 'desc' | null;
 type SessionSortKey = 'lastActivity' | 'traces' | 'cost' | 'avgLatency' | 'duration';
@@ -115,8 +119,15 @@ function extractMsgs(val: unknown): ChatMessage[] | null {
   if (Array.isArray(val) && val.length > 0 && isChatMsg(val[0])) return val as ChatMessage[];
   if (typeof val === 'object' && val != null) {
     const o = val as Record<string, unknown>;
-    if (Array.isArray(o['messages']) && o['messages'].length > 0 && isChatMsg((o['messages'] as unknown[])[0]))
-      return o['messages'] as ChatMessage[];
+    if (Array.isArray(o['messages']) && o['messages'].length > 0 && isChatMsg((o['messages'] as unknown[])[0])) {
+      const msgs = o['messages'] as ChatMessage[];
+      // Anthropic API stores system prompt as a separate top-level "system" field —
+      // prepend it as a synthetic system message so it shows up as CTX
+      if (o['system'] != null) {
+        return [{ role: 'system', content: o['system'] as unknown }, ...msgs];
+      }
+      return msgs;
+    }
     if (isChatMsg(val)) return [val as ChatMessage];
   }
   return null;
@@ -129,17 +140,62 @@ const ROLE_STYLE: Record<string, { bg: string; color: string; roleColor: string 
   tool:      { bg: 'rgba(188,140,255,0.07)', color: 'var(--text2)', roleColor: 'var(--purple)' },
 };
 
-function ChatBubble({ msg }: { msg: ChatMessage }) {
+const ROLE_STYLE_HISTORY: Record<string, { bg: string; color: string; roleColor: string }> = {
+  system:    { bg: 'rgba(139,148,158,0.04)', color: 'var(--text2)', roleColor: 'rgba(139,148,158,0.55)' },
+  user:      { bg: 'rgba(88,166,255,0.025)', color: 'var(--text2)', roleColor: 'rgba(88,166,255,0.45)' },
+  assistant: { bg: 'rgba(121,192,255,0.025)',color: 'var(--text2)', roleColor: 'rgba(121,192,255,0.45)' },
+  tool:      { bg: 'rgba(188,140,255,0.025)',color: 'var(--text2)', roleColor: 'rgba(188,140,255,0.45)' },
+};
+
+function ChatBubble({ msg, isNew = false, isHistory = false }: { msg: ChatMessage; isNew?: boolean; isHistory?: boolean }) {
   const text = msgToText(msg.content);
-  const s = ROLE_STYLE[msg.role] ?? { bg: 'var(--bg3)', color: 'var(--text)', roleColor: 'var(--text2)' };
+  const base = isHistory
+    ? (ROLE_STYLE_HISTORY[msg.role] ?? { bg: 'var(--bg3)', color: 'var(--text2)', roleColor: 'var(--text2)' })
+    : (ROLE_STYLE[msg.role] ?? { bg: 'var(--bg3)', color: 'var(--text)', roleColor: 'var(--text2)' });
   return (
-    <div style={{ padding: '8px 12px', borderRadius: 4, marginBottom: 5, background: s.bg, border: '1px solid var(--border)' }}>
-      <div style={{ fontSize: 10, color: s.roleColor, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.5px', marginBottom: 4 }}>
+    <div style={{
+      padding: '8px 12px', borderRadius: 4, marginBottom: 5,
+      background: isNew ? 'rgba(63,185,80,0.07)' : base.bg,
+      border: `1px solid ${isNew ? 'rgba(63,185,80,0.3)' : isHistory ? 'rgba(255,255,255,0.04)' : 'var(--border)'}`,
+      opacity: isHistory ? 0.65 : 1,
+    }}>
+      <div style={{ fontSize: 10, color: isNew ? 'var(--green)' : base.roleColor, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.5px', marginBottom: 4, display: 'flex', alignItems: 'center', gap: 5 }}>
         {msg.role}
+        {isNew && <span style={{ fontSize: 9, padding: '0 4px', borderRadius: 2, background: 'rgba(63,185,80,0.18)', color: 'var(--green)', fontWeight: 600, letterSpacing: '0.3px' }}>NEW</span>}
+        {msg.role === 'system' && !isNew && <span style={{ fontSize: 9, padding: '0 4px', borderRadius: 2, background: 'rgba(139,148,158,0.15)', color: 'var(--text2)', fontWeight: 500, letterSpacing: '0.3px' }}>CTX</span>}
+        {isHistory && msg.role !== 'system' && <span style={{ fontSize: 9, padding: '0 4px', borderRadius: 2, background: 'rgba(139,148,158,0.12)', color: 'var(--text2)', fontWeight: 500, letterSpacing: '0.3px' }}>HIST</span>}
       </div>
-      <div style={{ fontSize: 12, color: s.color, whiteSpace: 'pre-wrap', wordBreak: 'break-word', lineHeight: 1.65 }}>
+      <div style={{ fontSize: 12, color: isNew ? 'var(--text)' : base.color, whiteSpace: 'pre-wrap', wordBreak: 'break-word', lineHeight: 1.65 }}>
         {text || <em style={{ opacity: 0.4 }}>(empty)</em>}
       </div>
+    </div>
+  );
+}
+
+// Context-aware message list: last user message = NEW INPUT, system = CTX, prior turns = HIST
+function ContextAwareMsgs({ msgs }: { msgs: ChatMessage[] }) {
+  let lastUserIdx = -1;
+  for (let i = msgs.length - 1; i >= 0; i--) {
+    if (msgs[i]!.role === 'user') { lastUserIdx = i; break; }
+  }
+  return (
+    <div>
+      {msgs.map((msg, i) => {
+        const isNewInput = i === lastUserIdx && lastUserIdx >= 0;
+        const isHistory = !isNewInput && msg.role !== 'system' && i < lastUserIdx;
+        return (
+          <Fragment key={i}>
+            {isNewInput && i > 0 && (
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, margin: '8px 0 6px' }}>
+                <div style={{ flex: 1, height: 1, background: 'rgba(63,185,80,0.2)' }} />
+                <span style={{ fontSize: 9, color: 'var(--green)', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.8px', opacity: 0.85 }}>new input</span>
+                <div style={{ flex: 1, height: 1, background: 'rgba(63,185,80,0.2)' }} />
+              </div>
+            )}
+            <ChatBubble msg={msg} isNew={isNewInput} isHistory={isHistory} />
+          </Fragment>
+        );
+      })}
     </div>
   );
 }
@@ -251,7 +307,7 @@ type IOViewMode = 'tree' | 'chat' | 'json';
 function IOPanel({ val, isOutput = false, label }: { val: unknown; isOutput?: boolean; label: string }) {
   // Determine which modes are available
   const hasMsgs = extractMsgs(val) != null;
-  const defaultMode: IOViewMode = 'tree';
+  const defaultMode: IOViewMode = hasMsgs && !isOutput ? 'chat' : 'tree';
   const [mode, setMode] = useState<IOViewMode>(defaultMode);
 
   const labelColor = isOutput ? '#79c0ff' : 'var(--text2)';
@@ -270,7 +326,13 @@ function IOPanel({ val, isOutput = false, label }: { val: unknown; isOutput?: bo
       </div>
       <div style={{ maxHeight: 300, overflowY: 'auto', background: 'var(--bg2)' }}>
         {mode === 'tree' && <PathValueTree value={val} />}
-        {mode === 'chat' && <div style={{ padding: '8px 10px' }}><IOBlock val={val} isOutput={isOutput} /></div>}
+        {mode === 'chat' && (
+          <div style={{ padding: '8px 10px' }}>
+            {!isOutput && hasMsgs
+              ? <ContextAwareMsgs msgs={extractMsgs(val)!} />
+              : <IOBlock val={val} isOutput={isOutput} />}
+          </div>
+        )}
         {mode === 'json' && (
           <pre style={{ margin: 0, padding: '10px 12px', fontSize: 11, fontFamily: 'var(--mono)', lineHeight: 1.65, whiteSpace: 'pre-wrap', wordBreak: 'break-word', color: isOutput ? '#79c0ff' : 'var(--text)' }}>
             {JSON.stringify(val, null, 2)}
@@ -622,24 +684,10 @@ function ObsRow({ obs, depth }: { obs: LangfuseObservation; depth: number }) {
         {hasIO && <span style={{ fontSize: 9, opacity: 0.4, userSelect: 'none', flexShrink: 0 }} aria-hidden="true">{expanded ? '▼' : '▶'}</span>}
       </div>
       {expanded && (obs.input != null || obs.output != null) && (
-        <div style={{ paddingTop: 8, paddingBottom: 8, paddingRight: 12, paddingLeft: 12 + depth * 20 + 16, background: 'var(--bg)', borderBottom: '1px solid var(--border)' }}>
+        <div style={{ paddingTop: 10, paddingBottom: 10, paddingRight: 12, paddingLeft: 12 + depth * 20 + 16, background: 'var(--bg)', borderBottom: '1px solid var(--border)' }}>
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
-            {obs.input != null && (
-              <div>
-                <div style={{ fontSize: 10, color: 'var(--text2)', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.5px', marginBottom: 6 }}>Input</div>
-                <div style={{ maxHeight: 200, overflowY: 'auto', background: 'var(--bg2)', border: '1px solid var(--border)', borderRadius: 4, padding: '8px 10px' }}>
-                  <IOBlock val={obs.input} />
-                </div>
-              </div>
-            )}
-            {obs.output != null && (
-              <div>
-                <div style={{ fontSize: 10, color: '#79c0ff', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.5px', marginBottom: 6, opacity: 0.8 }}>Output</div>
-                <div style={{ maxHeight: 200, overflowY: 'auto', background: 'var(--bg2)', border: '1px solid var(--border)', borderRadius: 4, padding: '8px 10px' }}>
-                  <IOBlock val={obs.output} isOutput />
-                </div>
-              </div>
-            )}
+            {obs.input != null && <IOPanel val={obs.input} label="Input" />}
+            {obs.output != null && <IOPanel val={obs.output} isOutput label="Output" />}
           </div>
         </div>
       )}
@@ -674,9 +722,9 @@ function ObsTree({ observations }: { observations: LangfuseObservation[] }) {
   return <div>{roots.map(r => renderNode(r, 0))}</div>;
 }
 
-// ─── TraceDetailPanel ──────────────────────────────────────────────────────────
+// ─── InlineTraceDetail ─────────────────────────────────────────────────────────
 
-function TraceDetailPanel({ trace, onClose }: { trace: LangfuseTrace; onClose: () => void }) {
+function InlineTraceDetail({ trace }: { trace: LangfuseTrace }) {
   const [detail, setDetail] = useState<LangfuseTraceDetail | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
@@ -693,135 +741,111 @@ function TraceDetailPanel({ trace, onClose }: { trace: LangfuseTrace; onClose: (
   }, [trace.id]);
 
   const observations: LangfuseObservation[] = detail?.observations ?? [];
-
-  // Extract model from first GENERATION observation
   const modelName = observations.find(o => o.type === 'GENERATION' && o.model)?.model;
 
   return (
-    <>
-      <div onClick={onClose} style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.45)', zIndex: 90 }} aria-hidden="true" />
-      <div
-        style={{ position: 'fixed', top: 0, right: 0, bottom: 0, width: 620, background: 'var(--bg2)', borderLeft: '1px solid var(--border)', zIndex: 100, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}
-        role="dialog"
-        aria-label="Trace detail"
-        aria-modal="true"
-      >
-        {/* Header */}
-        <div style={{ padding: '12px 16px', borderBottom: '1px solid var(--border)', flexShrink: 0 }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 8 }}>
-            <button onClick={onClose} aria-label="Close" style={{ background: 'none', border: 'none', color: 'var(--text2)', cursor: 'pointer', fontSize: 16, padding: '2px 6px', lineHeight: 1, borderRadius: 4 }}>✕</button>
-            <div style={{ fontWeight: 700, fontSize: 14, flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-              {trace.name ?? <span style={{ fontFamily: 'var(--mono)', fontWeight: 400, fontSize: 12 }}>{trace.id}</span>}
-            </div>
-          </div>
-          {/* Chip row — matches Langfuse header chips */}
-          <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center', fontSize: 11 }}>
-            <span style={{ color: 'var(--text2)' }}>{new Date(trace.timestamp).toLocaleString()}</span>
-            {trace.latency != null && (
-              <span style={{ padding: '1px 7px', borderRadius: 10, background: 'rgba(255,255,255,0.06)', border: '1px solid var(--border)', color: 'var(--text2)', whiteSpace: 'nowrap' }}>
-                Latency: <span style={{ color: trace.latency > 10 ? 'var(--red)' : trace.latency > 3 ? 'var(--yellow)' : 'var(--green)', fontWeight: 600 }}>{formatLatency(trace.latency)}</span>
-              </span>
-            )}
-            {trace.environment && (
-              <span style={{ padding: '1px 7px', borderRadius: 10, background: 'rgba(255,255,255,0.06)', border: '1px solid var(--border)', color: 'var(--text2)' }}>
-                Env: <span style={{ color: 'var(--accent)' }}>{trace.environment}</span>
-              </span>
-            )}
-            {modelName && (
-              <span style={{ padding: '1px 7px', borderRadius: 10, background: 'rgba(88,166,255,0.08)', border: '1px solid rgba(88,166,255,0.2)', color: 'var(--accent)', fontFamily: 'var(--mono)', fontSize: 10 }}>
-                {modelName}
-              </span>
-            )}
-            {trace.totalCost != null && trace.totalCost > 0 && (
-              <span style={{ padding: '1px 7px', borderRadius: 10, background: 'rgba(255,255,255,0.06)', border: '1px solid var(--border)', color: 'var(--yellow)' }}>
-                {formatCost(trace.totalCost)}
-              </span>
-            )}
-            {(trace.userId || trace.sessionId) && (
-              <>
-                {trace.userId && <span style={{ color: 'var(--text2)' }}>User: <span style={{ fontFamily: 'var(--mono)', color: 'var(--text)' }}>{trace.userId}</span></span>}
-                {trace.sessionId && <span style={{ color: 'var(--text2)' }} title={trace.sessionId}>Session: <span style={{ fontFamily: 'var(--mono)', color: 'var(--text)' }}>{trace.sessionId.slice(0, 14)}…</span></span>}
-              </>
-            )}
-            {trace.tags.map(tag => (
-              <span key={tag} style={{ padding: '1px 5px', borderRadius: 3, background: 'var(--bg3)', border: '1px solid var(--border)', color: 'var(--text2)' }}>{tag}</span>
-            ))}
-          </div>
-        </div>
-
-        {/* Tab nav */}
-        <div style={{ display: 'flex', borderBottom: '1px solid var(--border)', flexShrink: 0 }}>
-          {(['preview', 'scores', 'metadata'] as const).map(t => (
-            <button key={t} onClick={() => setDetailTab(t)} style={{
-              padding: '8px 16px', border: 'none', borderBottom: `2px solid ${detailTab === t ? 'var(--accent)' : 'transparent'}`,
-              background: 'transparent', color: detailTab === t ? 'var(--accent)' : 'var(--text2)',
-              cursor: 'pointer', fontSize: 13, fontFamily: 'var(--font)', marginBottom: -1, transition: 'color 0.15s',
-            }}>
-              {t === 'preview' ? 'Preview' : t === 'scores' ? `Scores${trace.scores.length > 0 ? ` (${trace.scores.length})` : ''}` : 'Metadata'}
-            </button>
-          ))}
-        </div>
-
-        {/* Preview tab */}
-        {detailTab === 'preview' && (
-          <div style={{ flex: 1, overflowY: 'auto' }}>
-            <div style={{ padding: 16, display: 'flex', flexDirection: 'column', gap: 12, borderBottom: '1px solid var(--border)' }}>
-              <IOPanel val={trace.input} label="Input" />
-              <IOPanel val={trace.output} isOutput label="Output" />
-            </div>
-
-            {loading && <div className="loading" role="status">Loading observations…</div>}
-            {error && <div className="error-banner" style={{ margin: 16 }}>{error}</div>}
-            {!loading && observations.length > 0 && (
-              <div>
-                <div style={{ padding: '10px 16px 4px', fontSize: 10, color: 'var(--text2)', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.5px' }}>
-                  Observations ({observations.length})
-                </div>
-                <ObsTree observations={observations} />
-              </div>
-            )}
-            {!loading && observations.length === 0 && !error && (
-              <div className="empty" style={{ padding: '16px', fontSize: 12, color: 'var(--text2)' }}>No observations recorded</div>
-            )}
-          </div>
+    <div style={{ borderBottom: '1px solid var(--border)', background: 'var(--bg)' }}>
+      {/* Chip row */}
+      <div style={{ padding: '8px 16px', borderBottom: '1px solid var(--border)', display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center', fontSize: 11, background: 'rgba(255,255,255,0.015)' }}>
+        <span style={{ color: 'var(--text2)', fontVariantNumeric: 'tabular-nums' }}>{new Date(trace.timestamp).toLocaleString()}</span>
+        {trace.latency != null && (
+          <span style={{ padding: '1px 7px', borderRadius: 10, background: 'rgba(255,255,255,0.05)', border: '1px solid var(--border)', color: 'var(--text2)', whiteSpace: 'nowrap' }}>
+            Latency: <span style={{ color: trace.latency > 10 ? 'var(--red)' : trace.latency > 3 ? 'var(--yellow)' : 'var(--green)', fontWeight: 600 }}>{formatLatency(trace.latency)}</span>
+          </span>
         )}
+        {trace.environment && (
+          <span style={{ padding: '1px 7px', borderRadius: 10, background: 'rgba(255,255,255,0.05)', border: '1px solid var(--border)', color: 'var(--text2)' }}>
+            Env: <span style={{ color: 'var(--accent)' }}>{trace.environment}</span>
+          </span>
+        )}
+        {modelName && (
+          <span style={{ padding: '1px 7px', borderRadius: 10, background: 'rgba(88,166,255,0.08)', border: '1px solid rgba(88,166,255,0.2)', color: 'var(--accent)', fontFamily: 'var(--mono)', fontSize: 10 }}>
+            {modelName}
+          </span>
+        )}
+        {trace.totalCost != null && trace.totalCost > 0 && (
+          <span style={{ padding: '1px 7px', borderRadius: 10, background: 'rgba(255,255,255,0.05)', border: '1px solid var(--border)', color: 'var(--yellow)' }}>
+            {formatCost(trace.totalCost)}
+          </span>
+        )}
+        {trace.userId && <span style={{ color: 'var(--text2)' }}>User: <span style={{ fontFamily: 'var(--mono)', color: 'var(--text)' }}>{trace.userId}</span></span>}
+        {trace.sessionId && <span style={{ color: 'var(--text2)' }} title={trace.sessionId}>Session: <span style={{ fontFamily: 'var(--mono)', color: 'var(--text)' }}>{trace.sessionId.slice(0, 14)}…</span></span>}
+        {trace.tags.map(tag => (
+          <span key={tag} style={{ padding: '1px 5px', borderRadius: 3, background: 'var(--bg3)', border: '1px solid var(--border)', color: 'var(--text2)' }}>{tag}</span>
+        ))}
+      </div>
 
-        {/* Scores tab */}
-        {detailTab === 'scores' && (
-          <div style={{ flex: 1, overflowY: 'auto', padding: 16 }}>
-            {trace.scores.length === 0
-              ? <div className="empty">No scores</div>
-              : (
-                <div className="card" style={{ padding: 0, overflow: 'hidden' }}>
-                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 80px 100px', gap: '0 12px', padding: '7px 16px', borderBottom: '1px solid var(--border)', background: 'var(--bg)' }}>
-                    {['Name', 'Value', 'Type'].map(h => (
-                      <div key={h} style={{ fontSize: 11, color: 'var(--text2)', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.4px' }}>{h}</div>
-                    ))}
-                  </div>
-                  {trace.scores.map(s => (
-                    <div key={s.name} style={{ display: 'grid', gridTemplateColumns: '1fr 80px 100px', gap: '0 12px', padding: '9px 16px', borderBottom: '1px solid var(--border)', alignItems: 'center', fontSize: 12 }}>
-                      <div style={{ fontWeight: 500 }}>{s.name}</div>
-                      <div style={{ fontWeight: 700, color: s.value >= 0.8 ? 'var(--green)' : s.value >= 0.5 ? 'var(--yellow)' : 'var(--red)', fontVariantNumeric: 'tabular-nums' }}>{s.value.toFixed(3)}</div>
-                      <div style={{ color: 'var(--text2)' }}>NUMERIC</div>
-                    </div>
+      {/* Tab nav */}
+      <div style={{ display: 'flex', borderBottom: '1px solid var(--border)' }}>
+        {(['preview', 'scores', 'metadata'] as const).map(t => (
+          <button key={t} onClick={() => setDetailTab(t)} style={{
+            padding: '7px 16px', border: 'none', borderBottom: `2px solid ${detailTab === t ? 'var(--accent)' : 'transparent'}`,
+            background: 'transparent', color: detailTab === t ? 'var(--accent)' : 'var(--text2)',
+            cursor: 'pointer', fontSize: 12, fontFamily: 'var(--font)', marginBottom: -1, transition: 'color 0.15s',
+          }}>
+            {t === 'preview' ? 'Preview' : t === 'scores' ? `Scores${trace.scores.length > 0 ? ` (${trace.scores.length})` : ''}` : 'Metadata'}
+          </button>
+        ))}
+      </div>
+
+      {/* Preview tab */}
+      {detailTab === 'preview' && (
+        <div style={{ padding: 16 }}>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginBottom: 16 }}>
+            <IOPanel val={trace.input} label="Input" />
+            <IOPanel val={trace.output} isOutput label="Output" />
+          </div>
+          {loading && <div className="loading" role="status" style={{ padding: '16px 0' }}>Loading observations…</div>}
+          {error && <div className="error-banner">{error}</div>}
+          {!loading && observations.length > 0 && (
+            <div className="card" style={{ padding: 0, overflow: 'hidden' }}>
+              <div style={{ padding: '7px 12px', fontSize: 10, color: 'var(--text2)', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.5px', background: 'var(--bg)', borderBottom: '1px solid var(--border)' }}>
+                Observations ({observations.length})
+              </div>
+              <ObsTree observations={observations} />
+            </div>
+          )}
+          {!loading && observations.length === 0 && !error && (
+            <div style={{ fontSize: 12, color: 'var(--text2)', padding: '8px 0' }}>No observations recorded</div>
+          )}
+        </div>
+      )}
+
+      {/* Scores tab */}
+      {detailTab === 'scores' && (
+        <div style={{ padding: 16 }}>
+          {trace.scores.length === 0
+            ? <div className="empty">No scores</div>
+            : (
+              <div className="card" style={{ padding: 0, overflow: 'hidden' }}>
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 80px 100px', gap: '0 12px', padding: '7px 16px', borderBottom: '1px solid var(--border)', background: 'var(--bg)' }}>
+                  {['Name', 'Value', 'Type'].map(h => (
+                    <div key={h} style={{ fontSize: 11, color: 'var(--text2)', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.4px' }}>{h}</div>
                   ))}
                 </div>
-              )}
-          </div>
-        )}
+                {trace.scores.map(s => (
+                  <div key={s.name} style={{ display: 'grid', gridTemplateColumns: '1fr 80px 100px', gap: '0 12px', padding: '9px 16px', borderBottom: '1px solid var(--border)', alignItems: 'center', fontSize: 12 }}>
+                    <div style={{ fontWeight: 500 }}>{s.name}</div>
+                    <div style={{ fontWeight: 700, color: s.value >= 0.8 ? 'var(--green)' : s.value >= 0.5 ? 'var(--yellow)' : 'var(--red)', fontVariantNumeric: 'tabular-nums' }}>{s.value.toFixed(3)}</div>
+                    <div style={{ color: 'var(--text2)' }}>NUMERIC</div>
+                  </div>
+                ))}
+              </div>
+            )}
+        </div>
+      )}
 
-        {/* Metadata tab */}
-        {detailTab === 'metadata' && (
-          <div style={{ flex: 1, overflowY: 'auto' }}>
-            {loading
-              ? <div className="loading">Loading…</div>
-              : detail != null && detail.metadata != null
-                ? <PathValueTree value={detail.metadata} />
-                : <div className="empty">No metadata</div>}
-          </div>
-        )}
-      </div>
-    </>
+      {/* Metadata tab */}
+      {detailTab === 'metadata' && (
+        <div>
+          {loading
+            ? <div className="loading">Loading…</div>
+            : detail != null && detail.metadata != null
+              ? <PathValueTree value={detail.metadata} />
+              : <div className="empty">No metadata</div>}
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -830,11 +854,9 @@ function TraceDetailPanel({ trace, onClose }: { trace: LangfuseTrace; onClose: (
 function TraceRow({
   t,
   detailed = false,
-  onDetail,
 }: {
   t: LangfuseTrace;
   detailed?: boolean;
-  onDetail?: (t: LangfuseTrace) => void;
 }) {
   const [expanded, setExpanded] = useState(false);
   const inp = extractText(t.input);
@@ -877,18 +899,6 @@ function TraceRow({
             {t.tags.map(tag => (
               <span key={tag} style={{ fontSize: 10, padding: '1px 5px', borderRadius: 3, background: 'var(--bg3)', color: 'var(--text2)', border: '1px solid var(--border)', whiteSpace: 'nowrap' }}>{tag}</span>
             ))}
-            {onDetail && (
-              <button
-                onClick={e => { e.stopPropagation(); onDetail(t); }}
-                title="View trace detail"
-                aria-label="View trace detail"
-                style={{ background: 'none', border: '1px solid var(--border)', borderRadius: 4, color: 'var(--text2)', cursor: 'pointer', fontSize: 10, padding: '1px 6px', lineHeight: 1.6, flexShrink: 0, marginLeft: 2 }}
-                onMouseEnter={e => { (e.currentTarget as HTMLButtonElement).style.borderColor = 'var(--accent)'; (e.currentTarget as HTMLButtonElement).style.color = 'var(--accent)'; }}
-                onMouseLeave={e => { (e.currentTarget as HTMLButtonElement).style.borderColor = 'var(--border)'; (e.currentTarget as HTMLButtonElement).style.color = 'var(--text2)'; }}
-              >
-                detail →
-              </button>
-            )}
           </div>
           {inp && (
             <div style={{ fontSize: 11, color: 'var(--text2)', fontFamily: 'var(--mono)', lineHeight: 1.5, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
@@ -936,30 +946,7 @@ function TraceRow({
         <div><CostBadge cost={t.totalCost} /></div>
       </div>
 
-      {expanded && (
-        <div style={{ padding: '0 16px 14px', borderBottom: '1px solid var(--border)', background: 'var(--bg3)' }}>
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
-            <div>
-              <div style={{ fontSize: 10, color: 'var(--text2)', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.5px', marginBottom: 8, paddingTop: 12 }}>Input</div>
-              <div style={{ maxHeight: 360, overflowY: 'auto', background: 'var(--bg2)', border: '1px solid var(--border)', borderRadius: 4, padding: '10px 12px' }}>
-                <IOBlock val={t.input} isOutput={false} />
-              </div>
-            </div>
-            <div>
-              <div style={{ fontSize: 10, color: '#79c0ff', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.5px', marginBottom: 8, paddingTop: 12, opacity: 0.8 }}>Output</div>
-              <div style={{ maxHeight: 360, overflowY: 'auto', background: 'var(--bg2)', border: '1px solid var(--border)', borderRadius: 4, padding: '10px 12px' }}>
-                <IOBlock val={t.output} isOutput={true} />
-              </div>
-            </div>
-          </div>
-          {(t.sessionId ?? t.userId) && (
-            <div style={{ marginTop: 10, fontSize: 11, color: 'var(--text2)', display: 'flex', gap: 24 }}>
-              {t.sessionId && <span>Session: <span style={{ fontFamily: 'var(--mono)', color: 'var(--text)', userSelect: 'all' }}>{t.sessionId}</span></span>}
-              {t.userId && <span>User: <span style={{ fontFamily: 'var(--mono)', color: 'var(--text)' }}>{t.userId}</span></span>}
-            </div>
-          )}
-        </div>
-      )}
+      {expanded && <InlineTraceDetail trace={t} />}
     </div>
   );
 }
@@ -1038,19 +1025,25 @@ function FilterChip({ label, value, onRemove }: { label: string; value: string; 
 
 // ─── Overview tab ─────────────────────────────────────────────────────────────
 
-function OverviewTab() {
+function OverviewTab({ langfuseConfigured }: { langfuseConfigured: boolean }) {
   const [range, setRange] = useState<Range>('30d');
   const [metrics, setMetrics] = useState<LangfuseDailyMetric[]>([]);
   const [traces, setTraces] = useState<LangfuseTrace[]>([]);
   const [scores, setScores] = useState<LangfuseScore[]>([]);
-  const [error, setError] = useState('');
-  const [loading, setLoading] = useState(true);
+  const [lfError, setLfError] = useState('');
+  const [lfLoading, setLfLoading] = useState(langfuseConfigured);
   const [refreshing, setRefreshing] = useState(false);
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
+  const [nativeStats, setNativeStats] = useState<NativeStats | null>(null);
+
+  useEffect(() => {
+    api.native.stats().then(s => setNativeStats(s)).catch(() => null);
+  }, []);
 
   const load = useCallback(async () => {
+    if (!langfuseConfigured) return;
     setRefreshing(true);
-    setError('');
+    setLfError('');
     try {
       const days = range === '7d' ? 7 : range === '30d' ? 30 : 90;
       const [mResult, tResult, scResult] = await Promise.allSettled([
@@ -1062,15 +1055,15 @@ function OverviewTab() {
       if (tResult.status === 'fulfilled') setTraces(tResult.value.data ?? []);
       if (scResult.status === 'fulfilled') setScores(scResult.value.data ?? []);
       const failures = [mResult, tResult, scResult].filter(r => r.status === 'rejected').map(r => (r as PromiseRejectedResult).reason as string);
-      if (failures.length > 0) setError(failures.join(' · '));
+      if (failures.length > 0) setLfError(failures.join(' · '));
       setLastUpdated(new Date());
     } catch (e) {
-      setError(String(e));
+      setLfError(String(e));
     } finally {
-      setLoading(false);
+      setLfLoading(false);
       setRefreshing(false);
     }
-  }, [range]);
+  }, [range, langfuseConfigured]);
 
   useEffect(() => { void load(); }, [load]);
 
@@ -1082,57 +1075,82 @@ function OverviewTab() {
   const avgLatency = tracesWithLatency.length > 0
     ? tracesWithLatency.reduce((s, t) => s + (t.latency ?? 0), 0) / tracesWithLatency.length : 0;
 
-  if (loading) return <div className="loading" role="status">Loading…</div>;
-
   return (
     <div className="stacked">
-      <div className="filter-bar">
-        <div className="range-btns" role="group" aria-label="Time range">
-          {(['7d', '30d', '90d'] as Range[]).map(r => (
-            <button key={r} className={`range-btn${range === r ? ' active' : ''}`} onClick={() => setRange(r)} aria-pressed={range === r}>{r}</button>
-          ))}
-        </div>
-        <button className="btn" onClick={load} disabled={refreshing} aria-label="Refresh data" style={{ marginLeft: 'auto' }}>
-          {refreshing ? '↻ Refreshing…' : '↻ Refresh'}
-        </button>
-        {lastUpdated && <span style={{ fontSize: 11, color: 'var(--text2)' }} aria-live="polite">Updated {relativeTime(lastUpdated.toISOString())}</span>}
-      </div>
-
-      {error && <div className="error-banner" role="alert">{error}</div>}
-
-      <div className="stats-grid">
-        <StatCard label="Traces" display={String(totalTraces)} color="accent" sub={`last ${range}`} />
-        <StatCard label="Total Tokens" display={formatTokens(totalInput + totalOutput)} color="green" sub={`${formatTokens(totalInput)} in · ${formatTokens(totalOutput)} out`} />
-        <StatCard label="Total Cost" display={formatCost(totalCost)} color="yellow" sub={`last ${range}`} />
-        <StatCard label="Avg Latency" display={avgLatency > 0 ? formatLatency(avgLatency) : '—'} color={avgLatency > 10 ? 'red' : avgLatency > 3 ? 'yellow' : 'green'} sub="recent traces" />
-      </div>
-
-      <div className="grid-2">
-        <div className="chart-card"><div className="chart-title">Trace Volume</div><TraceVolumeChart metrics={metrics} /></div>
-        <div className="chart-card"><div className="chart-title">Token Usage — input / output</div><TokenBarChart metrics={metrics} /></div>
-      </div>
-
-      <div className="grid-2">
-        <div className="chart-card"><div className="chart-title">Cost per Day</div><CostBarChart metrics={metrics} /></div>
-        <div className="chart-card"><div className="chart-title">Model Breakdown</div><ModelBreakdown metrics={metrics} /></div>
-      </div>
-
-      {scores.length > 0 && (
-        <div className="chart-card"><div className="chart-title">Eval Scores</div><ScoreOverview scores={scores} /></div>
+      {/* Native stats — always visible */}
+      {nativeStats && (
+        <section aria-label="Claude Code native stats">
+          <div className="section-header">
+            <span className="section-title">Claude Code Activity</span>
+            <span style={{ fontSize: 12, color: 'var(--text2)' }}>from ~/.claude/projects/</span>
+          </div>
+          <div className="stats-grid">
+            <StatCard label="Claude Sessions" display={String(nativeStats.totalSessions)} color="accent" sub="from ~/.claude/projects/" />
+            <StatCard label="User Turns" display={String(nativeStats.totalUserTurns)} color="green" sub="across all sessions" />
+            <StatCard label="Tool Calls" display={formatTokens(nativeStats.totalToolCalls)} color="accent" sub="across all sessions" />
+            <StatCard label="Active Projects" display={String(nativeStats.projects.length)} color="yellow" sub="unique project dirs" />
+          </div>
+        </section>
       )}
 
-      <section aria-label="Recent traces">
-        <div className="section-header">
-          <span className="section-title">Recent Traces</span>
-          <span style={{ fontSize: 12, color: 'var(--text2)' }}>{traces.length} loaded · click to expand</span>
-        </div>
-        <div className="card" style={{ padding: 0, overflow: 'hidden' }}>
-          <TraceListHeader />
-          {traces.length === 0
-            ? <div className="empty">No traces yet</div>
-            : traces.map(t => <TraceRow key={t.id} t={t} />)}
-        </div>
-      </section>
+      {/* Langfuse section */}
+      {langfuseConfigured && (
+        <>
+          <div className="filter-bar">
+            <div className="range-btns" role="group" aria-label="Time range">
+              {(['7d', '30d', '90d'] as Range[]).map(r => (
+                <button key={r} className={`range-btn${range === r ? ' active' : ''}`} onClick={() => setRange(r)} aria-pressed={range === r}>{r}</button>
+              ))}
+            </div>
+            <button className="btn" onClick={load} disabled={refreshing} aria-label="Refresh data" style={{ marginLeft: 'auto' }}>
+              {refreshing ? '↻ Refreshing…' : '↻ Refresh'}
+            </button>
+            {lastUpdated && <span style={{ fontSize: 11, color: 'var(--text2)' }} aria-live="polite">Updated {relativeTime(lastUpdated.toISOString())}</span>}
+          </div>
+
+          {lfError && <div className="error-banner" role="alert">{lfError}</div>}
+
+          {lfLoading
+            ? <div className="loading" role="status">Loading Langfuse data…</div>
+            : (
+              <>
+                <div className="stats-grid">
+                  <StatCard label="Traces" display={String(totalTraces)} color="accent" sub={`last ${range}`} />
+                  <StatCard label="Total Tokens" display={formatTokens(totalInput + totalOutput)} color="green" sub={`${formatTokens(totalInput)} in · ${formatTokens(totalOutput)} out`} />
+                  <StatCard label="Total Cost" display={formatCost(totalCost)} color="yellow" sub={`last ${range}`} />
+                  <StatCard label="Avg Latency" display={avgLatency > 0 ? formatLatency(avgLatency) : '—'} color={avgLatency > 10 ? 'red' : avgLatency > 3 ? 'yellow' : 'green'} sub="recent traces" />
+                </div>
+
+                <div className="grid-2">
+                  <div className="chart-card"><div className="chart-title">Trace Volume</div><TraceVolumeChart metrics={metrics} /></div>
+                  <div className="chart-card"><div className="chart-title">Token Usage — input / output</div><TokenBarChart metrics={metrics} /></div>
+                </div>
+
+                <div className="grid-2">
+                  <div className="chart-card"><div className="chart-title">Cost per Day</div><CostBarChart metrics={metrics} /></div>
+                  <div className="chart-card"><div className="chart-title">Model Breakdown</div><ModelBreakdown metrics={metrics} /></div>
+                </div>
+
+                {scores.length > 0 && (
+                  <div className="chart-card"><div className="chart-title">Eval Scores</div><ScoreOverview scores={scores} /></div>
+                )}
+
+                <section aria-label="Recent traces">
+                  <div className="section-header">
+                    <span className="section-title">Recent Traces</span>
+                    <span style={{ fontSize: 12, color: 'var(--text2)' }}>{traces.length} loaded · click to expand</span>
+                  </div>
+                  <div className="card" style={{ padding: 0, overflow: 'hidden' }}>
+                    <TraceListHeader />
+                    {traces.length === 0
+                      ? <div className="empty">No traces yet</div>
+                      : traces.map(t => <TraceRow key={t.id} t={t} />)}
+                  </div>
+                </section>
+              </>
+            )}
+        </>
+      )}
     </div>
   );
 }
@@ -1156,7 +1174,6 @@ function TracesTab() {
   const [error, setError] = useState('');
   const [sortKey, setSortKey] = useState<TracesSortKey>('timestamp');
   const [sortDir, setSortDir] = useState<SortDir>('desc');
-  const [selectedTrace, setSelectedTrace] = useState<LangfuseTrace | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -1247,13 +1264,12 @@ function TracesTab() {
               <TraceListHeader detailed sort={{ key: sortKey, dir: sortDir, onSort: handleSort }} />
               {sortedTraces.length === 0
                 ? <div className="empty">No traces match your filters</div>
-                : sortedTraces.map(t => <TraceRow key={t.id} t={t} detailed onDetail={setSelectedTrace} />)}
+                : sortedTraces.map(t => <TraceRow key={t.id} t={t} detailed />)}
             </div>
           )}
 
         <Pagination page={page} totalPages={totalPages} onChange={setPage} />
       </div>
-      {selectedTrace && <TraceDetailPanel trace={selectedTrace} onClose={() => setSelectedTrace(null)} />}
     </>
   );
 }
@@ -1305,13 +1321,11 @@ function SessionAccordion({
   isExpanded,
   onToggle,
   isUnsessioned = false,
-  onDetail,
 }: {
   group: SessionGroup;
   isExpanded: boolean;
   onToggle: () => void;
   isUnsessioned?: boolean;
-  onDetail?: (t: LangfuseTrace) => void;
 }) {
   const [copied, setCopied] = useState(false);
 
@@ -1410,7 +1424,7 @@ function SessionAccordion({
           <TraceListHeader indent />
           {group.traces.map(t => (
             <div key={t.id} style={{ paddingLeft: 16 }}>
-              <TraceRow t={t} onDetail={onDetail} />
+              <TraceRow t={t} />
             </div>
           ))}
         </div>
@@ -1428,7 +1442,6 @@ function SessionsTab() {
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [sortKey, setSortKey] = useState<SessionSortKey>('lastActivity');
   const [sortDir, setSortDir] = useState<SortDir>('desc');
-  const [selectedTrace, setSelectedTrace] = useState<LangfuseTrace | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -1554,7 +1567,6 @@ function SessionsTab() {
                     group={g}
                     isExpanded={expanded.has(g.id)}
                     onToggle={() => toggleExpand(g.id)}
-                    onDetail={setSelectedTrace}
                   />
                 ))}
                 {unsessioned.length > 0 && (
@@ -1575,13 +1587,11 @@ function SessionsTab() {
                     isExpanded={expanded.has('__unsessioned__')}
                     onToggle={() => toggleExpand('__unsessioned__')}
                     isUnsessioned
-                    onDetail={setSelectedTrace}
                   />
                 )}
               </div>
             )}
       </div>
-      {selectedTrace && <TraceDetailPanel trace={selectedTrace} onClose={() => setSelectedTrace(null)} />}
     </>
   );
 }
@@ -1686,7 +1696,6 @@ function ObservationsTab() {
   const [nameFilter, setNameFilter] = useState('');
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
-  const [selectedTrace, setSelectedTrace] = useState<LangfuseTrace | null>(null);
   const [sortKey, setSortKey] = useState<'startTime' | 'duration' | 'type'>('startTime');
   const [sortDir, setSortDir] = useState<SortDir>('desc');
 
@@ -1728,13 +1737,6 @@ function ObservationsTab() {
   const handleSort = (k: typeof sortKey) => {
     if (sortKey === k) setSortDir(d => d === 'asc' ? 'desc' : 'asc');
     else { setSortKey(k); setSortDir('desc'); }
-  };
-
-  const handleTraceClick = async (traceId: string) => {
-    try {
-      const t = await api.langfuse.traceDetail(traceId);
-      setSelectedTrace(t as LangfuseTrace);
-    } catch { /* ignore */ }
   };
 
   const colGrid = '120px 100px 1fr 200px 100px 80px 80px';
@@ -1799,13 +1801,9 @@ function ObservationsTab() {
                       </div>
                       <div style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', color: 'var(--text)' }}>{o.name ?? <em style={{ color: 'var(--text2)' }}>unnamed</em>}</div>
                       <div style={{ minWidth: 0 }}>
-                        <button
-                          onClick={() => void handleTraceClick(o.traceId)}
-                          title={o.traceId}
-                          style={{ background: 'none', border: 'none', color: 'var(--accent)', cursor: 'pointer', fontFamily: 'var(--mono)', fontSize: 11, padding: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: '100%', display: 'block', textAlign: 'left' }}
-                        >
+                        <span title={o.traceId} style={{ fontFamily: 'var(--mono)', fontSize: 11, color: 'var(--text2)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', display: 'block' }}>
                           {o.traceId.slice(0, 20)}…
-                        </button>
+                        </span>
                       </div>
                       <div style={{ fontSize: 11, color: 'var(--text2)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{o.model ?? '—'}</div>
                       <div style={{ fontSize: 11, color: 'var(--text2)', fontVariantNumeric: 'tabular-nums' }}>{totalTok != null && totalTok > 0 ? formatTokens(totalTok) : '—'}</div>
@@ -1820,8 +1818,258 @@ function ObservationsTab() {
 
         <Pagination page={page} totalPages={totalPages} onChange={setPage} />
       </div>
-      {selectedTrace && <TraceDetailPanel trace={selectedTrace} onClose={() => setSelectedTrace(null)} />}
     </>
+  );
+}
+
+// ─── NativeEventRow ────────────────────────────────────────────────────────────
+
+function NativeEventRow({ ev }: { ev: NativeEvent }) {
+  const isAssistant = ev.type === 'assistant';
+
+  if (ev.toolUse) {
+    return (
+      <details style={{ marginBottom: 5 }}>
+        <summary style={{
+          cursor: 'pointer', padding: '5px 10px', borderRadius: 4,
+          background: 'rgba(88,166,255,0.07)', border: '1px solid rgba(88,166,255,0.15)',
+          fontSize: 11, display: 'flex', alignItems: 'center', gap: 8,
+          listStyle: 'none', userSelect: 'none',
+        }}>
+          <span style={{ fontSize: 9, opacity: 0.5 }}>▶</span>
+          <span style={{ padding: '1px 5px', borderRadius: 3, background: 'rgba(88,166,255,0.15)', color: 'var(--accent)', fontSize: 10, fontWeight: 600 }}>TOOL</span>
+          <span style={{ fontFamily: 'var(--mono)', color: 'var(--text)', fontWeight: 600 }}>{ev.toolUse.name}</span>
+          {ev.text && <span style={{ fontSize: 11, color: 'var(--text2)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1 }}>{ev.text.slice(0, 80)}</span>}
+          <span style={{ fontSize: 10, color: 'var(--text2)', marginLeft: 'auto', flexShrink: 0 }}>{relativeTime(ev.timestamp)}</span>
+        </summary>
+        <div style={{ padding: '8px 10px', background: 'rgba(88,166,255,0.03)', borderRadius: '0 0 4px 4px', border: '1px solid rgba(88,166,255,0.1)', borderTop: 'none' }}>
+          <pre style={{ margin: 0, fontSize: 11, fontFamily: 'var(--mono)', lineHeight: 1.6, whiteSpace: 'pre-wrap', wordBreak: 'break-word', color: 'var(--text)' }}>
+            {JSON.stringify(ev.toolUse.input, null, 2)}
+          </pre>
+        </div>
+      </details>
+    );
+  }
+
+  if (ev.toolResult) {
+    const content = ev.toolResult.content;
+    const preview = typeof content === 'string'
+      ? content.slice(0, 500)
+      : JSON.stringify(content, null, 2).slice(0, 500);
+    return (
+      <details style={{ marginBottom: 5 }}>
+        <summary style={{
+          cursor: 'pointer', padding: '5px 10px', borderRadius: 4,
+          background: 'rgba(188,140,255,0.06)', border: '1px solid rgba(188,140,255,0.12)',
+          fontSize: 11, display: 'flex', alignItems: 'center', gap: 8,
+          listStyle: 'none', userSelect: 'none',
+        }}>
+          <span style={{ fontSize: 9, opacity: 0.5 }}>▶</span>
+          <span style={{ padding: '1px 5px', borderRadius: 3, background: 'rgba(188,140,255,0.15)', color: 'var(--purple)', fontSize: 10, fontWeight: 600 }}>RESULT</span>
+          <span style={{ fontSize: 10, color: 'var(--text2)', marginLeft: 'auto', flexShrink: 0 }}>{relativeTime(ev.timestamp)}</span>
+        </summary>
+        <div style={{ padding: '8px 10px', background: 'rgba(188,140,255,0.03)', borderRadius: '0 0 4px 4px', border: '1px solid rgba(188,140,255,0.1)', borderTop: 'none' }}>
+          <pre style={{ margin: 0, fontSize: 11, fontFamily: 'var(--mono)', lineHeight: 1.6, whiteSpace: 'pre-wrap', wordBreak: 'break-word', color: 'var(--text2)' }}>
+            {preview}
+          </pre>
+        </div>
+      </details>
+    );
+  }
+
+  if (ev.text) {
+    const style = isAssistant
+      ? { bg: 'rgba(121,192,255,0.07)', border: 'rgba(121,192,255,0.15)', roleColor: '#79c0ff', role: 'ASSISTANT' }
+      : { bg: 'rgba(88,166,255,0.07)', border: 'rgba(88,166,255,0.15)', roleColor: 'var(--accent)', role: 'USER' };
+    return (
+      <div style={{ marginBottom: 5, padding: '7px 10px', borderRadius: 4, background: style.bg, border: `1px solid ${style.border}` }}>
+        <div style={{ fontSize: 9, color: style.roleColor, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.5px', marginBottom: 4, display: 'flex', justifyContent: 'space-between' }}>
+          <span>{style.role}</span>
+          <span style={{ fontWeight: 400, opacity: 0.6 }}>{relativeTime(ev.timestamp)}</span>
+        </div>
+        <div style={{ fontSize: 12, color: 'var(--text)', whiteSpace: 'pre-wrap', wordBreak: 'break-word', lineHeight: 1.65 }}>
+          {ev.text.length > 800 ? ev.text.slice(0, 800) + '…' : ev.text}
+        </div>
+      </div>
+    );
+  }
+
+  return null;
+}
+
+// ─── NativeSessionsTab ─────────────────────────────────────────────────────────
+
+function NativeSessionsTab() {
+  const [sessions, setSessions] = useState<NativeSession[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
+  const [expandedPath, setExpandedPath] = useState<string | null>(null);
+  const [detail, setDetail] = useState<NativeSessionDetail | null>(null);
+  const [detailLoading, setDetailLoading] = useState(false);
+  const [detailError, setDetailError] = useState('');
+
+  useEffect(() => {
+    api.native.sessions()
+      .then(data => setSessions(data))
+      .catch(e => setError(String(e)))
+      .finally(() => setLoading(false));
+  }, []);
+
+  const toggleExpand = (jsonlPath: string) => {
+    if (expandedPath === jsonlPath) {
+      setExpandedPath(null);
+      setDetail(null);
+      return;
+    }
+    setExpandedPath(jsonlPath);
+    setDetail(null);
+    setDetailLoading(true);
+    setDetailError('');
+    api.native.session(btoa(jsonlPath))
+      .then(d => setDetail(d))
+      .catch(e => setDetailError(String(e)))
+      .finally(() => setDetailLoading(false));
+  };
+
+  if (loading) return <div className="loading" role="status">Loading sessions…</div>;
+  if (error) return <div className="error-banner" role="alert">{error}</div>;
+
+  const SESSION_COLS = '150px 1fr 120px 80px 80px 80px';
+
+  return (
+    <div className="stacked">
+      <div className="section-header">
+        <span className="section-title">Claude Code Sessions</span>
+        <span style={{ fontSize: 12, color: 'var(--text2)' }}>{sessions.length} sessions · from ~/.claude/projects/</span>
+      </div>
+      <div className="card" style={{ padding: 0, overflow: 'hidden' }}>
+        {/* Header */}
+        <div style={{ display: 'grid', gridTemplateColumns: SESSION_COLS, gap: '0 12px', padding: '7px 16px', borderBottom: '1px solid var(--border)', background: 'var(--bg)', position: 'sticky', top: 0, zIndex: 1 }}>
+          {(['Started', 'Project', 'Branch', 'Duration', 'Turns', 'Tools'] as const).map(h => (
+            <div key={h} style={{ fontSize: 11, color: 'var(--text2)', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.4px' }}>{h}</div>
+          ))}
+        </div>
+
+        {sessions.length === 0
+          ? <div className="empty">No sessions found in ~/.claude/projects/</div>
+          : sessions.map(s => {
+            const isExpanded = expandedPath === s.jsonlPath;
+            const projName = s.cwd
+              ? s.cwd.replace(/\\/g, '/').split('/').filter(Boolean).pop() ?? s.cwd
+              : '—';
+            const durationMs = s.startedAt && s.lastActivityAt
+              ? new Date(s.lastActivityAt).getTime() - new Date(s.startedAt).getTime()
+              : 0;
+
+            return (
+              <Fragment key={s.jsonlPath}>
+                <div
+                  role="button"
+                  tabIndex={0}
+                  aria-expanded={isExpanded}
+                  onClick={() => toggleExpand(s.jsonlPath)}
+                  onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggleExpand(s.jsonlPath); } }}
+                  style={{
+                    display: 'grid', gridTemplateColumns: SESSION_COLS, gap: '0 12px',
+                    padding: '10px 16px', borderBottom: '1px solid var(--border)',
+                    cursor: 'pointer', alignItems: 'center', fontSize: 12,
+                    background: isExpanded ? 'rgba(88,166,255,0.04)' : undefined,
+                    transition: 'background 0.1s',
+                  }}
+                  onMouseEnter={e => { (e.currentTarget as HTMLDivElement).style.background = 'var(--bg3)'; }}
+                  onMouseLeave={e => { (e.currentTarget as HTMLDivElement).style.background = isExpanded ? 'rgba(88,166,255,0.04)' : ''; }}
+                >
+                  <div style={{ fontSize: 11, color: 'var(--text2)', display: 'flex', alignItems: 'center', gap: 5 }}>
+                    <span style={{ opacity: 0.4, fontSize: 9, userSelect: 'none' }} aria-hidden="true">{isExpanded ? '▼' : '▶'}</span>
+                    {s.startedAt ? relativeTime(s.startedAt) : '—'}
+                  </div>
+                  <div style={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontWeight: 500, color: 'var(--text)' }} title={s.cwd}>
+                    {projName}
+                  </div>
+                  <div style={{ fontSize: 11, color: 'var(--text2)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                    {s.gitBranch ?? '—'}
+                  </div>
+                  <div style={{ fontSize: 11, color: 'var(--text2)', fontVariantNumeric: 'tabular-nums' }}>
+                    {durationMs > 0 ? formatDuration(durationMs) : '—'}
+                  </div>
+                  <div style={{ fontVariantNumeric: 'tabular-nums' }}>{s.userTurns}</div>
+                  <div style={{ fontVariantNumeric: 'tabular-nums', color: s.toolCalls > 0 ? 'var(--accent)' : 'var(--text2)' }}>{s.toolCalls}</div>
+                </div>
+
+                {isExpanded && (
+                  <div style={{ borderBottom: '1px solid var(--border)', background: 'var(--bg)' }}>
+                    {/* Chip row */}
+                    <div style={{ padding: '8px 16px', display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center', fontSize: 11, borderBottom: '1px solid var(--border)', background: 'rgba(255,255,255,0.015)' }}>
+                      {durationMs > 0 && (
+                        <span style={{ padding: '1px 7px', borderRadius: 10, background: 'rgba(255,255,255,0.05)', border: '1px solid var(--border)', color: 'var(--text2)' }}>
+                          Duration: <span style={{ color: 'var(--text)', fontWeight: 600 }}>{formatDuration(durationMs)}</span>
+                        </span>
+                      )}
+                      {s.gitBranch && (
+                        <span style={{ padding: '1px 7px', borderRadius: 10, background: 'rgba(88,166,255,0.08)', border: '1px solid rgba(88,166,255,0.2)', color: 'var(--accent)', fontFamily: 'var(--mono)', fontSize: 10 }}>
+                          {s.gitBranch}
+                        </span>
+                      )}
+                      <span style={{ padding: '1px 7px', borderRadius: 10, background: 'rgba(255,255,255,0.05)', border: '1px solid var(--border)', color: 'var(--text2)' }}>
+                        {s.toolCalls} tool calls
+                      </span>
+                      <span style={{ padding: '1px 7px', borderRadius: 10, background: 'rgba(255,255,255,0.05)', border: '1px solid var(--border)', color: 'var(--text2)' }}>
+                        {s.userTurns} user turns
+                      </span>
+                      <span style={{ fontSize: 10, color: 'var(--text2)', fontFamily: 'var(--mono)', marginLeft: 'auto', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: 400 }} title={s.cwd}>
+                        {s.cwd}
+                      </span>
+                    </div>
+
+                    {/* Event timeline */}
+                    {detailLoading && expandedPath === s.jsonlPath && (
+                      <div className="loading" style={{ padding: '12px 16px' }}>Loading events…</div>
+                    )}
+                    {detailError && expandedPath === s.jsonlPath && (
+                      <div className="error-banner" style={{ margin: '8px 16px' }}>{detailError}</div>
+                    )}
+                    {detail && detail.jsonlPath === s.jsonlPath && (
+                      <div style={{ maxHeight: 420, overflowY: 'auto', padding: '10px 12px' }}>
+                        {detail.events.length === 0
+                          ? <div className="empty">No events recorded</div>
+                          : detail.events.map(ev => <NativeEventRow key={ev.uuid} ev={ev} />)}
+                      </div>
+                    )}
+                  </div>
+                )}
+              </Fragment>
+            );
+          })}
+      </div>
+    </div>
+  );
+}
+
+// ─── LangfuseGateNotice ────────────────────────────────────────────────────────
+
+function LangfuseGateNotice() {
+  return (
+    <div style={{ padding: '48px 24px', textAlign: 'center' }}>
+      <div style={{ fontSize: 16, fontWeight: 600, marginBottom: 8, color: 'var(--text2)' }}>
+        Langfuse not configured
+      </div>
+      <div style={{ color: 'var(--text2)', fontSize: 13, marginBottom: 20 }}>
+        Add credentials to{' '}
+        <code style={{ fontFamily: 'var(--mono)', color: 'var(--accent)', background: 'var(--bg3)', padding: '2px 6px', borderRadius: 3 }}>
+          ~/.nexus/config.json
+        </code>{' '}
+        to see LLM cost and token data.
+      </div>
+      <pre style={{ display: 'inline-block', textAlign: 'left', fontSize: 11, fontFamily: 'var(--mono)', color: 'var(--text2)', background: 'var(--bg3)', border: '1px solid var(--border)', padding: '12px 18px', borderRadius: 6, lineHeight: 1.7 }}>
+{`{
+  "langfuse": {
+    "baseUrl": "https://cloud.langfuse.com",
+    "publicKey": "pk-lf-...",
+    "secretKey": "sk-lf-..."
+  }
+}`}
+      </pre>
+    </div>
   );
 }
 
@@ -1829,8 +2077,9 @@ function ObservationsTab() {
 
 const TABS: { id: Tab; label: string }[] = [
   { id: 'overview', label: 'Overview' },
+  { id: 'native', label: 'Sessions' },
   { id: 'traces', label: 'Traces' },
-  { id: 'sessions', label: 'Sessions' },
+  { id: 'sessions', label: 'LF Sessions' },
   { id: 'observations', label: 'Observations' },
   { id: 'users', label: 'Users' },
 ];
@@ -1842,25 +2091,11 @@ export function Observability() {
   const tab: Tab = VALID_TABS.has(rawTab) ? (rawTab as Tab) : 'overview';
   const setTab = (t: Tab) => setSearchParams({ tab: t }, { replace: true });
 
-  const [configured, setConfigured] = useState<boolean | null>(null);
+  const [langfuseConfigured, setLangfuseConfigured] = useState<boolean>(false);
 
   useEffect(() => {
-    api.langfuse.status().then(s => setConfigured(s.configured)).catch(() => setConfigured(false));
+    api.langfuse.status().then(s => setLangfuseConfigured(s.configured)).catch(() => setLangfuseConfigured(false));
   }, []);
-
-  if (configured === null) return <div className="loading" role="status">Loading…</div>;
-
-  if (configured === false) {
-    return (
-      <div style={{ padding: '48px 24px', textAlign: 'center' }}>
-        <div style={{ fontSize: 32, marginBottom: 16 }} aria-hidden="true">🔌</div>
-        <div style={{ fontSize: 16, fontWeight: 600, marginBottom: 8 }}>Langfuse not configured</div>
-        <div style={{ color: 'var(--text2)', fontFamily: 'var(--mono)', fontSize: 12 }}>
-          Add credentials to ~/.nexus/config.json under "langfuse"
-        </div>
-      </div>
-    );
-  }
 
   return (
     <div className="stacked">
@@ -1872,11 +2107,12 @@ export function Observability() {
           </button>
         ))}
       </nav>
-      {tab === 'overview' && <OverviewTab />}
-      {tab === 'traces' && <TracesTab />}
-      {tab === 'sessions' && <SessionsTab />}
-      {tab === 'observations' && <ObservationsTab />}
-      {tab === 'users' && <UsersTab />}
+      {tab === 'overview' && <OverviewTab langfuseConfigured={langfuseConfigured} />}
+      {tab === 'native' && <NativeSessionsTab />}
+      {tab === 'traces' && (langfuseConfigured ? <TracesTab /> : <LangfuseGateNotice />)}
+      {tab === 'sessions' && (langfuseConfigured ? <SessionsTab /> : <LangfuseGateNotice />)}
+      {tab === 'observations' && (langfuseConfigured ? <ObservationsTab /> : <LangfuseGateNotice />)}
+      {tab === 'users' && (langfuseConfigured ? <UsersTab /> : <LangfuseGateNotice />)}
     </div>
   );
 }

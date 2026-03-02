@@ -4,7 +4,7 @@ import os from 'node:os';
 import { Hono } from 'hono';
 import { cors } from 'hono/cors';
 import { serveStatic } from '@hono/node-server/serve-static';
-import { NexusService, isInitialized } from '@nexus/core';
+import { NexusService, isInitialized, listSessions, getSessionDetail, getNativeStats } from '@nexus/core';
 import type { DecisionKind } from '@nexus/core';
 
 const app = new Hono();
@@ -243,6 +243,57 @@ app.get('/api/activity', (c) => {
     return all.sort((a, b) => b.timestamp - a.timestamp).slice(0, limit);
   });
   return c.json(events);
+});
+
+// ─── Native Sessions (Claude Code JSONL) ──────────────────────────────────────
+
+const CLAUDE_DIR = path.join(os.homedir(), '.claude');
+
+app.get('/api/native/stats', async (c) => {
+  try {
+    const stats = await getNativeStats(CLAUDE_DIR);
+    return c.json(stats);
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : 'Unknown error';
+    return c.json({ error: msg }, 500);
+  }
+});
+
+app.get('/api/native/sessions', async (c) => {
+  try {
+    const cwdFilter = c.req.query('cwd');
+    let sessions = await listSessions(CLAUDE_DIR);
+    if (cwdFilter) {
+      sessions = sessions.filter(s => s.cwd.includes(cwdFilter));
+    }
+    return c.json(sessions);
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : 'Unknown error';
+    return c.json({ error: msg }, 500);
+  }
+});
+
+app.get('/api/native/sessions/:encodedPath', async (c) => {
+  const encodedPath = c.req.param('encodedPath');
+  let jsonlPath: string;
+  try {
+    jsonlPath = Buffer.from(encodedPath, 'base64').toString('utf-8');
+  } catch {
+    return c.json({ error: 'Invalid path encoding' }, 400);
+  }
+
+  // Security: only allow paths within ~/.claude
+  if (!jsonlPath.startsWith(CLAUDE_DIR)) {
+    return c.json({ error: 'Path not allowed' }, 403);
+  }
+
+  try {
+    const detail = await getSessionDetail(jsonlPath);
+    return c.json(detail);
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : 'Unknown error';
+    return c.json({ error: msg }, 404);
+  }
 });
 
 // ─── Langfuse Proxy ───────────────────────────────────────────────────────────

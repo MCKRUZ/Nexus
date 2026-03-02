@@ -69,6 +69,41 @@ export interface ConflictCheck {
   potentialConflicts: Array<{ topic: string; description: string }>;
 }
 
+// ─── Native session types ──────────────────────────────────────────────────────
+
+export interface NativeSession {
+  sessionId: string;
+  jsonlPath: string;
+  cwd: string;
+  gitBranch?: string;
+  slug?: string;
+  startedAt: string;
+  lastActivityAt: string;
+  userTurns: number;
+  toolCalls: number;
+}
+
+export interface NativeEvent {
+  uuid: string;
+  parentUuid?: string;
+  timestamp: string;
+  type: 'user' | 'assistant';
+  text?: string;
+  toolUse?: { id: string; name: string; input: unknown };
+  toolResult?: { toolUseId: string; content: unknown };
+}
+
+export interface NativeSessionDetail extends NativeSession {
+  events: NativeEvent[];
+}
+
+export interface NativeStats {
+  totalSessions: number;
+  totalUserTurns: number;
+  totalToolCalls: number;
+  projects: string[];
+}
+
 // ─── Langfuse types ────────────────────────────────────────────────────────────
 
 export interface LangfuseDailyMetric {
@@ -213,6 +248,12 @@ export const api = {
       `/query?q=${encodeURIComponent(q)}` + (projectId ? `&projectId=${projectId}` : ''),
     ),
   activity: (limit = 500) => get<ActivityEvent[]>(`/activity?limit=${limit}`),
+  native: {
+    stats: () => get<NativeStats>('/native/stats'),
+    sessions: (cwd?: string) =>
+      get<NativeSession[]>('/native/sessions' + (cwd ? `?cwd=${encodeURIComponent(cwd)}` : '')),
+    session: (encodedPath: string) => get<NativeSessionDetail>(`/native/sessions/${encodedPath}`),
+  },
   langfuse: {
     status: () => get<{ configured: boolean }>('/langfuse/status'),
     metrics: (days = 30) =>
