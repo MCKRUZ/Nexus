@@ -43,6 +43,16 @@ app.get('/api/projects', (c) => {
   return c.json(projects);
 });
 
+app.get('/api/projects/counts', (c) => {
+  const projects = withSvc((svc) => svc.listProjects());
+  const counts = projects.map((p) => ({
+    id: p.id,
+    decisions: withSvc((svc) => svc.getDecisionsForProject(p.id)).length,
+    patterns: withSvc((svc) => svc.getPatternsForProject(p.id)).length,
+  }));
+  return c.json(counts);
+});
+
 app.get('/api/projects/:id', (c) => {
   const id = c.req.param('id');
   const project = withSvc((svc) => svc.getProjectById(id));

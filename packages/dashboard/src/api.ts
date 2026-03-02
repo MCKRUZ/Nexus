@@ -217,6 +217,7 @@ export const api = {
   projects: {
     list: () => get<Project[]>('/projects'),
     get: (id: string) => get<Project>(`/projects/${id}`),
+    counts: () => get<Array<{ id: string; decisions: number; patterns: number }>>('/projects/counts'),
     decisions: (id: string) => get<Decision[]>(`/projects/${id}/decisions`),
     patterns: (id: string) => get<Pattern[]>(`/projects/${id}/patterns`),
     preferences: (id: string) => get<Preference[]>(`/projects/${id}/preferences`),
