@@ -15,8 +15,9 @@ Everything stays on your machine. No cloud. No telemetry.
 - **Conflict detection** — Detect when projects make contradictory decisions (e.g., two projects using conflicting auth approaches)
 - **CLAUDE.md sync** — Automatically writes learned context back into each project's `CLAUDE.md`
 - **MCP server** — Expose Nexus tools directly to Claude Code via the Model Context Protocol
-- **Dashboard** — React/Vite web UI with observability, project graph, and Langfuse integration
-- **Langfuse proxy** — Route Langfuse LLM observability through the Nexus server for unified access
+- **Dashboard** — React/Vite web UI with observability, project graph, and activity feed
+- **Native session viewer** — Browse all Claude Code sessions from `~/.claude/projects/` with inline event timelines, tool call inspection, and aggregate stats — no configuration required
+- **Langfuse overlay** — Optional: add Langfuse credentials to unlock LLM cost/token charts, trace trees, and session groupings
 
 ---
 
@@ -183,9 +184,17 @@ Config lives at `~/.nexus/config.json`:
 }
 ```
 
-### Langfuse Integration
+### Native Session Observability
 
-If you run a self-hosted [Langfuse](https://langfuse.com) instance, add the credentials above. The Nexus server proxies all Langfuse API calls through `/api/langfuse/*`, which the dashboard uses to display:
+The Observability dashboard works out of the box with **no configuration**. Nexus reads Claude Code's JSONL session files directly from `~/.claude/projects/` and surfaces:
+
+- Session list with project, branch, duration, user turns, tool call count
+- Inline event timeline per session — text messages, tool calls (expandable with JSON input), and tool results
+- Aggregate stats: total sessions, user turns, tool calls, active projects
+
+### Langfuse Integration (optional)
+
+If you run a self-hosted [Langfuse](https://langfuse.com) instance, add credentials to unlock LLM cost and token data. The Nexus server proxies Langfuse API calls through `/api/langfuse/*`, which the dashboard uses to display:
 
 - Daily cost and usage metrics
 - Full trace list with latency, cost, scores
@@ -205,7 +214,7 @@ If you run a self-hosted [Langfuse](https://langfuse.com) instance, add the cred
 | **Conflicts** | Open, potential, and resolved cross-project conflicts |
 | **Preferences** | Global and per-project preference editor |
 | **Search** | Full-text search across all knowledge |
-| **Observability** | Langfuse LLM traces, sessions, observations, cost charts |
+| **Observability** | Native Claude Code sessions (always) + Langfuse traces/cost charts (optional) |
 
 ---
 
