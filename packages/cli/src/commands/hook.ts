@@ -20,10 +20,18 @@
 
 import { Command } from 'commander';
 import path from 'node:path';
+import os from 'node:os';
 import fs from 'node:fs';
 import { log } from '../lib/output.js';
 import { openService } from '../lib/service.js';
-import { extractFromTranscript, extractFromFileSummary, detectConflicts } from '@nexus/core';
+import {
+  extractFromTranscript,
+  extractFromFileSummary,
+  detectConflicts,
+  findRecentJsonlForProject,
+  getSessionDetail,
+  sessionToTranscript,
+} from '@nexus/core';
 import type { DecisionKind } from '@nexus/core';
 
 export function hookCommand(): Command {
@@ -70,24 +78,39 @@ export function hookCommand(): Command {
 
           // Collect transcript or file list
           let extractionResult;
+          const claudeDir = path.join(os.homedir(), '.claude');
 
           if (opts.transcriptFile && fs.existsSync(opts.transcriptFile)) {
+            // Explicit transcript file provided
             const transcript = fs.readFileSync(opts.transcriptFile, 'utf8');
             output('Extracting from transcript...');
             extractionResult = await extractFromTranscript({ transcript });
-          } else if (opts.summary || opts.files) {
-            const filePaths = opts.files
-              ? opts.files.split(',').map((f) => f.trim()).filter(Boolean)
-              : [];
-            output('Extracting from session summary...');
-            extractionResult = await extractFromFileSummary({
-              filePaths,
-              sessionSummary: opts.summary ?? `Session in ${projectPath}`,
-            });
           } else {
-            // Nothing to extract from
-            output('No transcript or summary provided — skipping extraction.');
-            return;
+            // Auto-detect: find the most recent JSONL for this project
+            const jsonlPath = findRecentJsonlForProject(projectPath, claudeDir);
+            if (jsonlPath) {
+              output(`Auto-detected session: ${path.basename(jsonlPath)}`);
+              const detail = await getSessionDetail(jsonlPath);
+              const transcript = sessionToTranscript(detail.events);
+              if (transcript.trim()) {
+                extractionResult = await extractFromTranscript({ transcript });
+              } else {
+                output('Session has no extractable content — skipping.');
+                return;
+              }
+            } else if (opts.summary || opts.files) {
+              const filePaths = opts.files
+                ? opts.files.split(',').map((f) => f.trim()).filter(Boolean)
+                : [];
+              output('Extracting from session summary...');
+              extractionResult = await extractFromFileSummary({
+                filePaths,
+                sessionSummary: opts.summary ?? `Session in ${projectPath}`,
+              });
+            } else {
+              output('No session transcript found and no summary provided — skipping extraction.');
+              return;
+            }
           }
 
           const { decisions, patterns, preferences } = extractionResult;

@@ -198,6 +198,88 @@ function processLines(lines: RawLine[]): ProcessedSession {
   return { sessionId, cwd, gitBranch, slug, startedAt, lastActivityAt, userTurns, toolCalls, events };
 }
 
+// ─── Transcript conversion ────────────────────────────────────────────────────
+
+/**
+ * Converts parsed session events into a plain-text transcript suitable for
+ * LLM extraction. Tool results are omitted (noisy, may contain secrets).
+ */
+export function sessionToTranscript(events: NativeEvent[]): string {
+  const lines: string[] = [];
+  for (const ev of events) {
+    const ts = ev.timestamp ? `[${ev.timestamp}] ` : '';
+    if (ev.type === 'user' && ev.text) {
+      lines.push(`${ts}USER: ${ev.text}`);
+    } else if (ev.type === 'assistant') {
+      if (ev.text) {
+        lines.push(`${ts}ASSISTANT: ${ev.text}`);
+      }
+      if (ev.toolUse) {
+        const input =
+          ev.toolUse.input != null
+            ? JSON.stringify(ev.toolUse.input).slice(0, 300)
+            : '';
+        lines.push(`${ts}TOOL: ${ev.toolUse.name}(${input})`);
+      }
+    }
+  }
+  return lines.join('\n');
+}
+
+/**
+ * Finds the most recently modified JSONL file in ~/.claude/projects/ whose
+ * `cwd` field matches the given project path. Returns the file path or null.
+ */
+export function findRecentJsonlForProject(
+  projectPath: string,
+  claudeDir: string,
+): string | null {
+  const projectsDir = path.join(claudeDir, 'projects');
+  if (!fs.existsSync(projectsDir)) return null;
+
+  // Collect all jsonl files sorted by mtime descending
+  const allFiles: { file: string; mtime: number }[] = [];
+  try {
+    for (const entry of fs.readdirSync(projectsDir, { withFileTypes: true })) {
+      if (!entry.isDirectory()) continue;
+      const dirPath = path.join(projectsDir, entry.name);
+      try {
+        for (const f of fs.readdirSync(dirPath)) {
+          if (!f.endsWith('.jsonl')) continue;
+          const fullPath = path.join(dirPath, f);
+          try {
+            const stat = fs.statSync(fullPath);
+            allFiles.push({ file: fullPath, mtime: stat.mtimeMs });
+          } catch { /* skip */ }
+        }
+      } catch { /* skip */ }
+    }
+  } catch {
+    return null;
+  }
+
+  allFiles.sort((a, b) => b.mtime - a.mtime);
+
+  const normalized = path.normalize(projectPath).toLowerCase();
+
+  // Check the 30 most recent files — read just first few lines for cwd
+  for (const { file } of allFiles.slice(0, 30)) {
+    try {
+      const firstLines = fs.readFileSync(file, 'utf-8').split('\n').slice(0, 10);
+      for (const line of firstLines) {
+        try {
+          const parsed = JSON.parse(line) as { cwd?: string };
+          if (parsed.cwd && path.normalize(parsed.cwd).toLowerCase() === normalized) {
+            return file;
+          }
+        } catch { /* skip malformed */ }
+      }
+    } catch { /* skip unreadable */ }
+  }
+
+  return null;
+}
+
 // ─── Public API ───────────────────────────────────────────────────────────────
 
 export async function listSessions(claudeDir: string): Promise<NativeSession[]> {
