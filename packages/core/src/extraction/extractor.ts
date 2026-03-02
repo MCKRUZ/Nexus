@@ -12,9 +12,11 @@
 
 import Anthropic from '@anthropic-ai/sdk';
 import { filterSecrets } from '../security/index.js';
+import { resolveAnthropicApiKey } from '../config/index.js';
 import type { DecisionKind } from '../types/index.js';
 
-const client = new Anthropic(); // reads ANTHROPIC_API_KEY from env
+// Resolves key from env → ~/.nexus/config.json (supports local proxies like bablyon:4040)
+const client = new Anthropic({ apiKey: resolveAnthropicApiKey() });
 
 export interface ExtractedDecision {
   kind: DecisionKind;

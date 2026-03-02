@@ -4,9 +4,10 @@
  */
 
 import Anthropic from '@anthropic-ai/sdk';
+import { resolveAnthropicApiKey } from '../config/index.js';
 import type { Decision } from '../types/index.js';
 
-const client = new Anthropic();
+const client = new Anthropic({ apiKey: resolveAnthropicApiKey() });
 
 export interface ConflictDetectionInput {
   projectA: { id: string; name: string; decisions: Decision[] };

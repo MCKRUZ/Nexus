@@ -11,6 +11,8 @@ export interface NexusConfig {
   version: number;
   encryptionKey: string; // TODO: migrate to OS keychain in a future release
   createdAt: number;
+  /** API key for Anthropic / local proxy. Falls back to ANTHROPIC_API_KEY env var. */
+  anthropicApiKey?: string;
 }
 
 export function ensureNexusDir(): void {
@@ -38,6 +40,23 @@ export function writeConfig(config: NexusConfig): void {
   } catch {
     // chmod may not be supported on all platforms
   }
+}
+
+/**
+ * Resolves the Anthropic API key in priority order:
+ *   1. ANTHROPIC_API_KEY env var
+ *   2. anthropicApiKey field in ~/.nexus/config.json
+ * Returns undefined if neither is set (Anthropic client will throw).
+ */
+export function resolveAnthropicApiKey(): string | undefined {
+  if (process.env['ANTHROPIC_API_KEY']) return process.env['ANTHROPIC_API_KEY'];
+  try {
+    const cfg = readConfig();
+    if (cfg.anthropicApiKey) return cfg.anthropicApiKey;
+  } catch {
+    // config may not exist yet
+  }
+  return undefined;
 }
 
 export function initConfig(): NexusConfig {
