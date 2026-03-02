@@ -8,6 +8,7 @@ import { Patterns } from './pages/Patterns.js';
 import { Conflicts } from './pages/Conflicts.js';
 import { Preferences } from './pages/Preferences.js';
 import { Search } from './pages/Search.js';
+import { Observability } from './pages/Observability.js';
 
 function useServerStatus() {
   const [online, setOnline] = useState(false);
@@ -60,6 +61,9 @@ export function App() {
           <NavLink to="/search" className={({ isActive }) => isActive ? 'active' : ''}>
             <span className="icon">⌕</span> Search
           </NavLink>
+          <NavLink to="/observability" className={({ isActive }) => isActive ? 'active' : ''}>
+            <span className="icon">⬡</span> Observability
+          </NavLink>
         </nav>
         <div className="sidebar-footer">
           <span className={`status-dot${online ? '' : ' offline'}`} />
@@ -76,6 +80,7 @@ export function App() {
           <Route path="/conflicts" element={<PageShell title="Conflicts"><Conflicts /></PageShell>} />
           <Route path="/preferences" element={<PageShell title="Preferences"><Preferences /></PageShell>} />
           <Route path="/search" element={<PageShell title="Search"><Search /></PageShell>} />
+          <Route path="/observability" element={<PageShell title="LLM Observability"><Observability /></PageShell>} />
         </Routes>
       </main>
     </div>

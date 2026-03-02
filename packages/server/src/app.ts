@@ -1,5 +1,9 @@
+import fs from 'node:fs';
+import path from 'node:path';
+import os from 'node:os';
 import { Hono } from 'hono';
 import { cors } from 'hono/cors';
+import { serveStatic } from '@hono/node-server/serve-static';
 import { NexusService, isInitialized } from '@nexus/core';
 import type { DecisionKind } from '@nexus/core';
 
@@ -190,5 +194,113 @@ app.get('/api/stats', (c) => {
   });
   return c.json(stats);
 });
+
+// ─── Activity ─────────────────────────────────────────────────────────────────
+
+app.get('/api/activity', (c) => {
+  const limit = parseInt(c.req.query('limit') ?? '500', 10);
+  const events = withSvc((svc) => {
+    const projects = svc.listProjects();
+    const all: Array<{
+      id: string;
+      type: 'decision' | 'pattern';
+      projectId: string;
+      projectName: string;
+      kind?: string;
+      name?: string;
+      summary?: string;
+      description?: string;
+      rationale?: string;
+      frequency?: number;
+      timestamp: number;
+    }> = [];
+    for (const p of projects) {
+      for (const d of svc.getDecisionsForProject(p.id)) {
+        all.push({
+          id: d.id,
+          type: 'decision',
+          projectId: p.id,
+          projectName: p.name,
+          kind: d.kind,
+          summary: d.summary,
+          ...(d.rationale != null ? { rationale: d.rationale } : {}),
+          timestamp: d.recordedAt,
+        });
+      }
+      for (const pa of svc.getPatternsForProject(p.id)) {
+        all.push({
+          id: pa.id,
+          type: 'pattern',
+          projectId: p.id,
+          projectName: p.name,
+          name: pa.name,
+          description: pa.description,
+          frequency: pa.frequency,
+          timestamp: pa.lastSeenAt,
+        });
+      }
+    }
+    return all.sort((a, b) => b.timestamp - a.timestamp).slice(0, limit);
+  });
+  return c.json(events);
+});
+
+// ─── Langfuse Proxy ───────────────────────────────────────────────────────────
+
+function getLangfuseConfig(): { baseUrl: string; authHeader: string } | null {
+  try {
+    const cfgPath = path.join(os.homedir(), '.nexus', 'config.json');
+    const raw = fs.readFileSync(cfgPath, 'utf-8');
+    const cfg = JSON.parse(raw) as Record<string, unknown>;
+    const lf = cfg['langfuse'] as Record<string, string> | undefined;
+    if (!lf?.['baseUrl'] || !lf?.['publicKey'] || !lf?.['secretKey']) return null;
+    const credentials = Buffer.from(`${lf['publicKey']}:${lf['secretKey']}`).toString('base64');
+    return {
+      baseUrl: lf['baseUrl'].replace(/\/$/, ''),
+      authHeader: `Basic ${credentials}`,
+    };
+  } catch {
+    return null;
+  }
+}
+
+app.get('/api/langfuse/status', (c) => {
+  return c.json({ configured: getLangfuseConfig() !== null });
+});
+
+// Generic read-only proxy: /api/langfuse/* → {langfuseBase}/api/public/*
+app.get('/api/langfuse/*', async (c) => {
+  const lf = getLangfuseConfig();
+  if (!lf) return c.json({ error: 'Langfuse not configured' }, 503);
+
+  const { pathname, search } = new URL(c.req.url);
+  const suffix = pathname.slice('/api/langfuse'.length);
+  const lfUrl = `${lf.baseUrl}/api/public${suffix}${search}`;
+
+  try {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 15_000);
+    const res = await fetch(lfUrl, {
+      headers: { Authorization: lf.authHeader },
+      signal: controller.signal,
+    });
+    clearTimeout(timeout);
+
+    if (!res.ok) {
+      return c.json({ error: `Langfuse API error: ${res.status}` }, 502);
+    }
+    return c.json(await res.json() as Record<string, unknown>);
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : 'Unknown error';
+    return c.json({ error: `Langfuse unreachable: ${msg}` }, 502);
+  }
+});
+
+// ─── Dashboard (static) ───────────────────────────────────────────────────────
+
+app.use('/*', serveStatic({ root: './packages/dashboard/dist' }));
+
+// SPA fallback — serve index.html for any unmatched route
+app.use('/*', serveStatic({ path: './packages/dashboard/dist/index.html' }));
 
 export { app };

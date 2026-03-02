@@ -69,6 +69,98 @@ export interface ConflictCheck {
   potentialConflicts: Array<{ topic: string; description: string }>;
 }
 
+// ─── Langfuse types ────────────────────────────────────────────────────────────
+
+export interface LangfuseDailyMetric {
+  date: string;
+  countTraces: number;
+  countObservations: number;
+  totalCost: number;
+  usage: Array<{
+    model: string;
+    inputUsage: number;
+    outputUsage: number;
+    totalUsage: number;
+    countObservations: number;
+    countTraces: number;
+    totalCost: number;
+  }>;
+}
+
+export interface LangfuseTrace {
+  id: string;
+  timestamp: string;
+  name?: string;
+  sessionId?: string;
+  userId?: string;
+  tags: string[];
+  latency?: number; // seconds
+  totalCost?: number;
+  scores: Array<{ name: string; value: number }>;
+  input?: unknown;
+  output?: unknown;
+  environment?: string;
+}
+
+export interface LangfuseSession {
+  id: string;
+  createdAt: string;
+  projectId: string;
+  environment?: string;
+}
+
+export interface LangfuseObservation {
+  id: string;
+  traceId: string;
+  type: 'SPAN' | 'GENERATION' | 'EVENT';
+  name?: string;
+  startTime: string;
+  endTime?: string;
+  input?: unknown;
+  output?: unknown;
+  model?: string;
+  modelParameters?: Record<string, unknown>;
+  metadata?: unknown;
+  level?: 'DEFAULT' | 'DEBUG' | 'WARNING' | 'ERROR';
+  statusMessage?: string;
+  parentObservationId?: string;
+  usageDetails?: Record<string, number>;
+  costDetails?: Record<string, number>;
+  environment?: string;
+  version?: string;
+}
+
+export interface LangfuseTraceDetail extends LangfuseTrace {
+  metadata?: unknown;
+  release?: string;
+  version?: string;
+  bookmarked?: boolean;
+  observations: LangfuseObservation[];
+}
+
+export interface LangfuseScore {
+  id: string;
+  timestamp: string;
+  traceId: string;
+  name: string;
+  value: number;
+  dataType: 'NUMERIC' | 'BOOLEAN' | 'CATEGORICAL';
+}
+
+export interface ActivityEvent {
+  id: string;
+  type: 'decision' | 'pattern';
+  projectId: string;
+  projectName: string;
+  kind?: string;
+  name?: string;
+  summary?: string;
+  description?: string;
+  rationale?: string;
+  frequency?: number;
+  timestamp: number;
+}
+
 async function get<T>(path: string): Promise<T> {
   const res = await fetch(BASE + path);
   if (!res.ok) throw new Error(`GET ${path} → ${res.status}`);
@@ -120,4 +212,40 @@ export const api = {
     get<QueryResult>(
       `/query?q=${encodeURIComponent(q)}` + (projectId ? `&projectId=${projectId}` : ''),
     ),
+  activity: (limit = 500) => get<ActivityEvent[]>(`/activity?limit=${limit}`),
+  langfuse: {
+    status: () => get<{ configured: boolean }>('/langfuse/status'),
+    metrics: (days = 30) =>
+      get<{ data: LangfuseDailyMetric[] }>(`/langfuse/metrics/daily?limit=${days}`),
+    traces: (
+      limit = 50,
+      page = 1,
+      filters?: { name?: string; userId?: string; sessionId?: string },
+    ) => {
+      let url = `/langfuse/traces?limit=${Math.min(limit, 100)}&page=${page}`;
+      if (filters?.name) url += `&name=${encodeURIComponent(filters.name)}`;
+      if (filters?.userId) url += `&userId=${encodeURIComponent(filters.userId)}`;
+      if (filters?.sessionId) url += `&sessionId=${encodeURIComponent(filters.sessionId)}`;
+      return get<{ data: LangfuseTrace[]; meta: { totalItems: number } }>(url);
+    },
+    scores: (limit = 100) =>
+      get<{ data: LangfuseScore[]; meta: { totalItems: number } }>(`/langfuse/scores?limit=${Math.min(limit, 100)}`),
+    sessions: (limit = 50, page = 1) =>
+      get<{ data: LangfuseSession[]; meta: { totalItems: number } }>(
+        `/langfuse/sessions?limit=${Math.min(limit, 100)}&page=${page}`,
+      ),
+    traceDetail: (id: string) => get<LangfuseTraceDetail>(`/langfuse/traces/${id}`),
+    observations: (
+      limit = 50,
+      page = 1,
+      filters?: { name?: string; type?: string; traceId?: string; userId?: string },
+    ) => {
+      let url = `/langfuse/observations?limit=${Math.min(limit, 100)}&page=${page}`;
+      if (filters?.name) url += `&name=${encodeURIComponent(filters.name)}`;
+      if (filters?.type) url += `&type=${encodeURIComponent(filters.type)}`;
+      if (filters?.traceId) url += `&traceId=${encodeURIComponent(filters.traceId)}`;
+      if (filters?.userId) url += `&userId=${encodeURIComponent(filters.userId)}`;
+      return get<{ data: LangfuseObservation[]; meta: { totalItems: number } }>(url);
+    },
+  },
 };
