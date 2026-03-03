@@ -4,10 +4,25 @@
  */
 
 import Anthropic from '@anthropic-ai/sdk';
-import { resolveAnthropicApiKey } from '../config/index.js';
+import { resolveAnthropicAuth } from '../config/index.js';
 import type { Decision } from '../types/index.js';
 
-const client = new Anthropic({ apiKey: resolveAnthropicApiKey() });
+let _client: Anthropic | null = null;
+
+function getClient(): Anthropic {
+  if (!_client) {
+    const auth = resolveAnthropicAuth();
+    if (!auth.apiKey && !auth.authToken) {
+      throw new Error('Anthropic auth not configured — conflict detection unavailable.');
+    }
+    _client = new Anthropic({
+      ...(auth.apiKey ? { apiKey: auth.apiKey } : {}),
+      ...(auth.authToken ? { authToken: auth.authToken } : {}),
+      ...(auth.baseURL ? { baseURL: auth.baseURL } : {}),
+    });
+  }
+  return _client;
+}
 
 export interface ConflictDetectionInput {
   projectA: { id: string; name: string; decisions: Decision[] };
@@ -55,7 +70,7 @@ export async function detectConflicts(input: ConflictDetectionInput): Promise<De
     formatDecisions(input.projectB.decisions),
   ].join('\n');
 
-  const message = await client.messages.create({
+  const message = await getClient().messages.create({
     model: 'claude-haiku-4-5-20251001',
     max_tokens: 512,
     system: CONFLICT_SYSTEM,

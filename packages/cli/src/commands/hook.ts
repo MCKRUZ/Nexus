@@ -2,8 +2,13 @@
  * nexus hook post-session
  *
  * Called by Claude Code's Stop hook after each session ends.
- * Reads session metadata from stdin (JSON) or flags, runs LLM extraction,
- * and persists decisions/patterns/conflicts to the DB.
+ * Responsibilities:
+ *   1. Mark the project as seen (update lastSeenAt)
+ *   2. Run conflict detection against other registered projects
+ *
+ * Note: Decision/pattern extraction is intentionally NOT done here.
+ * Extraction happens in-session — Claude calls nexus_decide and
+ * nexus_record_pattern via MCP tools as decisions are made.
  *
  * Hook config in ~/.claude/settings.json:
  * {
@@ -11,7 +16,7 @@
  *     "Stop": [{
  *       "hooks": [{
  *         "type": "command",
- *         "command": "nexus hook post-session --project-path $CLAUDE_PROJECT_DIR"
+ *         "command": "node /path/to/nexus/packages/cli/dist/index.js hook post-session --quiet"
  *       }]
  *     }]
  *   }
@@ -20,19 +25,9 @@
 
 import { Command } from 'commander';
 import path from 'node:path';
-import os from 'node:os';
-import fs from 'node:fs';
 import { log } from '../lib/output.js';
 import { openService } from '../lib/service.js';
-import {
-  extractFromTranscript,
-  extractFromFileSummary,
-  detectConflicts,
-  findRecentJsonlForProject,
-  getSessionDetail,
-  sessionToTranscript,
-} from '@nexus/core';
-import type { DecisionKind } from '@nexus/core';
+import { detectConflicts } from '@nexus/core';
 
 export function hookCommand(): Command {
   const cmd = new Command('hook');
@@ -40,20 +35,14 @@ export function hookCommand(): Command {
 
   cmd
     .command('post-session')
-    .description('Run after a Claude Code session ends — extracts decisions, patterns, and detects conflicts')
+    .description('Run after a Claude Code session ends — marks project seen and detects conflicts')
     .option('-p, --project-path <path>', 'Project directory (defaults to cwd)')
-    .option('--transcript-file <file>', 'Path to session transcript file')
-    .option('--summary <text>', 'Brief summary of what was done this session')
-    .option('--files <list>', 'Comma-separated list of files modified this session')
     .option('--session-id <id>', 'Claude session ID')
-    .option('--dry-run', 'Extract but do not persist (shows what would be saved)')
+    .option('--dry-run', 'Show what would happen without persisting')
     .option('--quiet', 'Suppress output (for use in hooks)')
     .action(
       async (opts: {
         projectPath?: string;
-        transcriptFile?: string;
-        summary?: string;
-        files?: string;
         sessionId?: string;
         dryRun?: boolean;
         quiet?: boolean;
@@ -62,162 +51,61 @@ export function hookCommand(): Command {
         const projectPath = path.resolve(opts.projectPath ?? process.cwd());
 
         const svc = openService();
-        let success = false;
 
         try {
           const project = svc.getProjectByPath(projectPath);
           if (!project) {
             if (!opts.quiet) {
               log.warn(`No Nexus project registered at: ${projectPath}`);
-              log.dim('  Run `nexus project add` to register this project.');
+              log.dim('  Run `nexus project add` to register this directory.');
             }
             return;
           }
 
-          output(`Processing session for project: ${project.name}`);
-
-          // Always mark the project as seen — regardless of whether extraction succeeds.
+          // 1. Mark the project as seen
           if (!opts.dryRun) {
             svc.touchProject(project.id);
           }
+          output(`Session recorded for: ${project.name}`);
 
-          // Collect transcript or file list
-          let extractionResult;
-          const claudeDir = path.join(os.homedir(), '.claude');
+          // 2. Conflict detection — compare this project's decisions against others
+          const projectDecisions = svc.getDecisionsForProject(project.id);
+          if (projectDecisions.length === 0) return;
 
-          try {
-            if (opts.transcriptFile && fs.existsSync(opts.transcriptFile)) {
-              // Explicit transcript file provided
-              const transcript = fs.readFileSync(opts.transcriptFile, 'utf8');
-              output('Extracting from transcript...');
-              extractionResult = await extractFromTranscript({ transcript });
-            } else {
-              // Auto-detect: find the most recent JSONL for this project
-              const jsonlPath = findRecentJsonlForProject(projectPath, claudeDir);
-              if (jsonlPath) {
-                output(`Auto-detected session: ${path.basename(jsonlPath)}`);
-                const detail = await getSessionDetail(jsonlPath);
-                const transcript = sessionToTranscript(detail.events);
-                if (transcript.trim()) {
-                  extractionResult = await extractFromTranscript({ transcript });
-                } else {
-                  output('Session has no extractable content — skipping extraction.');
-                }
-              } else if (opts.summary || opts.files) {
-                const filePaths = opts.files
-                  ? opts.files.split(',').map((f) => f.trim()).filter(Boolean)
-                  : [];
-                output('Extracting from session summary...');
-                extractionResult = await extractFromFileSummary({
-                  filePaths,
-                  sessionSummary: opts.summary ?? `Session in ${projectPath}`,
-                });
-              } else {
-                output('No transcript or summary available — skipping extraction.');
-              }
-            }
-          } catch (extractErr) {
-            // Extraction is best-effort — auth missing, network down, etc.
-            // Project was already touched above, so the session is still recorded.
-            if (!opts.quiet) {
-              const msg = extractErr instanceof Error ? extractErr.message : String(extractErr);
-              log.warn(`Extraction skipped: ${msg}`);
-              if (msg.includes('auth') || msg.includes('api key') || msg.includes('API key')) {
-                log.dim('  → Add "anthropicApiKey" to ~/.nexus/config.json to enable extraction.');
-              }
-            }
-          }
+          const otherProjects = svc
+            .listProjects()
+            .filter((p) => p.id !== project.id && svc.getDecisionsForProject(p.id).length > 0)
+            .slice(0, 3); // cap at 3 to keep hook fast
 
-          if (!extractionResult) {
-            success = true;
-            output('Session recorded (no extraction).');
-            return;
-          }
+          for (const other of otherProjects) {
+            const otherDecisions = svc.getDecisionsForProject(other.id);
 
-          const { decisions, patterns, preferences } = extractionResult;
-
-          if (!opts.quiet) {
-            log.plain(`  Found: ${decisions.length} decisions, ${patterns.length} patterns, ${preferences.length} preferences`);
-          }
-
-          if (opts.dryRun) {
-            log.info('DRY RUN — nothing will be saved');
-            if (decisions.length > 0) {
-              log.plain('\nDecisions:');
-              for (const d of decisions) log.plain(`  [${d.kind}] ${d.summary}`);
-            }
-            if (patterns.length > 0) {
-              log.plain('\nPatterns:');
-              for (const p of patterns) log.plain(`  ${p.name}: ${p.description}`);
-            }
-            if (preferences.length > 0) {
-              log.plain('\nPreferences:');
-              for (const pref of preferences) log.plain(`  ${pref.key} = ${pref.value}`);
-            }
-            return;
-          }
-
-          // Persist decisions
-          for (const d of decisions) {
-            if (d.confidence === 'low') continue; // skip low-confidence
-            svc.recordDecision(
-              {
-                projectId: project.id,
-                kind: d.kind as DecisionKind,
-                summary: d.summary,
-                ...(d.rationale ? { rationale: d.rationale } : {}),
-                ...(opts.sessionId ? { sessionId: opts.sessionId } : {}),
-              },
-              'daemon',
-            );
-          }
-
-          // Persist patterns
-          for (const p of patterns) {
-            svc.upsertPattern({ projectId: project.id, name: p.name, description: p.description }, 'daemon');
-          }
-
-          // Persist preferences
-          for (const pref of preferences) {
-            svc.setPreference(pref.key, pref.value, 'project', project.id, 'daemon');
-          }
-
-          // Run conflict detection against other projects (async, non-blocking for hook speed)
-          const otherProjects = svc.listProjects().filter((p) => p.id !== project.id);
-
-          if (otherProjects.length > 0 && decisions.length > 0) {
-            const projectDecisions = svc.getDecisionsForProject(project.id);
-
-            for (const other of otherProjects.slice(0, 3)) { // check top 3 related
-              const otherDecisions = svc.getDecisionsForProject(other.id);
-              if (otherDecisions.length === 0) continue;
-
+            try {
               const conflicts = await detectConflicts({
                 projectA: { id: project.id, name: project.name, decisions: projectDecisions },
                 projectB: { id: other.id, name: other.name, decisions: otherDecisions },
               });
 
               for (const conflict of conflicts) {
-                svc.recordConflict(conflict.projectIds, conflict.description, 'daemon');
+                if (!opts.dryRun) {
+                  svc.recordConflict(conflict.projectIds, conflict.description, 'daemon');
+                }
                 if (!opts.quiet) {
-                  log.warn(`Conflict detected with ${other.name}: ${conflict.description}`);
+                  log.warn(`Conflict with ${other.name}: ${conflict.description}`);
                 }
               }
+            } catch {
+              // Conflict detection is best-effort — skip if auth unavailable
             }
           }
-
-          success = true;
-          output(`Session processed. Saved ${decisions.filter((d) => d.confidence !== 'low').length} decisions, ${patterns.length} patterns.`);
         } catch (err) {
           if (!opts.quiet) {
             log.error(`Hook failed: ${err instanceof Error ? err.message : String(err)}`);
           }
-          // Don't exit non-zero for hooks — we don't want to block Claude Code
+          // Never exit non-zero — hooks must not block Claude Code
         } finally {
           svc.close();
         }
-
-        void success;
       },
     );
 
