@@ -189,6 +189,61 @@ server.tool(
   },
 );
 
+// ─── nexus_record_pattern ─────────────────────────────────────────────────────
+
+server.tool(
+  'nexus_record_pattern',
+  'Record a recurring code pattern observed during this session. Use when you notice a consistent implementation approach being used or established in a project (e.g., a specific error handling pattern, a naming convention for files, a preferred way to structure API calls).',
+  {
+    projectPath: z.string().describe('Absolute path to the project directory'),
+    name: z.string().max(200).describe('Short name for the pattern (e.g., "Repository pattern", "Try-catch-rethrow")'),
+    description: z.string().max(1000).describe('What the pattern is and how it is used'),
+    examplePath: z.string().optional().describe('File path that exemplifies this pattern'),
+  },
+  async ({ projectPath, name, description, examplePath }) => {
+    const result = withService((svc) => {
+      const project = svc.getProjectByPath(projectPath);
+      if (!project) {
+        return { error: `No Nexus project registered at "${projectPath}". Run \`nexus project add ${projectPath}\` to register it.` };
+      }
+
+      const pattern = svc.upsertPattern(
+        {
+          projectId: project.id,
+          name,
+          description,
+          ...(examplePath ? { examplePath } : {}),
+        },
+        'mcp',
+      );
+
+      return { pattern, projectName: project.name };
+    });
+
+    if ('error' in result) {
+      return { content: [{ type: 'text', text: result.error }], isError: true };
+    }
+
+    return {
+      content: [
+        {
+          type: 'text',
+          text: [
+            `✓ Pattern recorded for project **${result.projectName}**:`,
+            ``,
+            `- **Name:** ${result.pattern.name}`,
+            `- **Description:** ${result.pattern.description}`,
+            `- **Frequency:** ×${result.pattern.frequency}`,
+            result.pattern.examplePath ? `- **Example:** \`${result.pattern.examplePath}\`` : null,
+          ]
+            .filter(Boolean)
+            .join('\n'),
+        },
+      ],
+    };
+  },
+);
+
 // ─── nexus_check_conflicts ────────────────────────────────────────────────────
 
 server.tool(
