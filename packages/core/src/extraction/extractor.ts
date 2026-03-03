@@ -12,11 +12,31 @@
 
 import Anthropic from '@anthropic-ai/sdk';
 import { filterSecrets } from '../security/index.js';
-import { resolveAnthropicApiKey } from '../config/index.js';
+import { resolveAnthropicAuth } from '../config/index.js';
 import type { DecisionKind } from '../types/index.js';
 
-// Resolves key from env → ~/.nexus/config.json (supports local proxies like bablyon:4040)
-const client = new Anthropic({ apiKey: resolveAnthropicApiKey() });
+// Lazy client — created on first use so missing config throws at call time, not import time.
+let _client: Anthropic | null = null;
+
+function getClient(): Anthropic {
+  if (!_client) {
+    const auth = resolveAnthropicAuth();
+    if (!auth.apiKey && !auth.authToken) {
+      throw new Error(
+        'Anthropic auth not configured. Options:\n' +
+        '  1. Set ANTHROPIC_API_KEY env var\n' +
+        '  2. Add "anthropicApiKey" to ~/.nexus/config.json\n' +
+        '  3. Log in to Claude Code (`claude login`) — Nexus can use your OAuth token',
+      );
+    }
+    _client = new Anthropic({
+      ...(auth.apiKey ? { apiKey: auth.apiKey } : {}),
+      ...(auth.authToken ? { authToken: auth.authToken } : {}),
+      ...(auth.baseURL ? { baseURL: auth.baseURL } : {}),
+    });
+  }
+  return _client;
+}
 
 export interface ExtractedDecision {
   kind: DecisionKind;
@@ -94,7 +114,7 @@ export async function extractFromTranscript(
     ? filtered.slice(-maxChars) // take the END (most recent context is most relevant)
     : filtered;
 
-  const message = await client.messages.create({
+  const message = await getClient().messages.create({
     model: 'claude-haiku-4-5-20251001', // cheapest model for extraction
     max_tokens: 1024,
     system: EXTRACTION_SYSTEM_PROMPT,

@@ -76,41 +76,62 @@ export function hookCommand(): Command {
 
           output(`Processing session for project: ${project.name}`);
 
+          // Always mark the project as seen — regardless of whether extraction succeeds.
+          if (!opts.dryRun) {
+            svc.touchProject(project.id);
+          }
+
           // Collect transcript or file list
           let extractionResult;
           const claudeDir = path.join(os.homedir(), '.claude');
 
-          if (opts.transcriptFile && fs.existsSync(opts.transcriptFile)) {
-            // Explicit transcript file provided
-            const transcript = fs.readFileSync(opts.transcriptFile, 'utf8');
-            output('Extracting from transcript...');
-            extractionResult = await extractFromTranscript({ transcript });
-          } else {
-            // Auto-detect: find the most recent JSONL for this project
-            const jsonlPath = findRecentJsonlForProject(projectPath, claudeDir);
-            if (jsonlPath) {
-              output(`Auto-detected session: ${path.basename(jsonlPath)}`);
-              const detail = await getSessionDetail(jsonlPath);
-              const transcript = sessionToTranscript(detail.events);
-              if (transcript.trim()) {
-                extractionResult = await extractFromTranscript({ transcript });
-              } else {
-                output('Session has no extractable content — skipping.');
-                return;
-              }
-            } else if (opts.summary || opts.files) {
-              const filePaths = opts.files
-                ? opts.files.split(',').map((f) => f.trim()).filter(Boolean)
-                : [];
-              output('Extracting from session summary...');
-              extractionResult = await extractFromFileSummary({
-                filePaths,
-                sessionSummary: opts.summary ?? `Session in ${projectPath}`,
-              });
+          try {
+            if (opts.transcriptFile && fs.existsSync(opts.transcriptFile)) {
+              // Explicit transcript file provided
+              const transcript = fs.readFileSync(opts.transcriptFile, 'utf8');
+              output('Extracting from transcript...');
+              extractionResult = await extractFromTranscript({ transcript });
             } else {
-              output('No session transcript found and no summary provided — skipping extraction.');
-              return;
+              // Auto-detect: find the most recent JSONL for this project
+              const jsonlPath = findRecentJsonlForProject(projectPath, claudeDir);
+              if (jsonlPath) {
+                output(`Auto-detected session: ${path.basename(jsonlPath)}`);
+                const detail = await getSessionDetail(jsonlPath);
+                const transcript = sessionToTranscript(detail.events);
+                if (transcript.trim()) {
+                  extractionResult = await extractFromTranscript({ transcript });
+                } else {
+                  output('Session has no extractable content — skipping extraction.');
+                }
+              } else if (opts.summary || opts.files) {
+                const filePaths = opts.files
+                  ? opts.files.split(',').map((f) => f.trim()).filter(Boolean)
+                  : [];
+                output('Extracting from session summary...');
+                extractionResult = await extractFromFileSummary({
+                  filePaths,
+                  sessionSummary: opts.summary ?? `Session in ${projectPath}`,
+                });
+              } else {
+                output('No transcript or summary available — skipping extraction.');
+              }
             }
+          } catch (extractErr) {
+            // Extraction is best-effort — auth missing, network down, etc.
+            // Project was already touched above, so the session is still recorded.
+            if (!opts.quiet) {
+              const msg = extractErr instanceof Error ? extractErr.message : String(extractErr);
+              log.warn(`Extraction skipped: ${msg}`);
+              if (msg.includes('auth') || msg.includes('api key') || msg.includes('API key')) {
+                log.dim('  → Add "anthropicApiKey" to ~/.nexus/config.json to enable extraction.');
+              }
+            }
+          }
+
+          if (!extractionResult) {
+            success = true;
+            output('Session recorded (no extraction).');
+            return;
           }
 
           const { decisions, patterns, preferences } = extractionResult;

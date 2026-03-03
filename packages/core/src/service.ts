@@ -12,6 +12,7 @@ import {
   findProjectById,
   createProject,
   removeProject,
+  touchProject,
   type CreateProjectParams,
 } from './repositories/project.js';
 import {
@@ -92,6 +93,10 @@ export class NexusService {
 
   removeProject(projectPath: string, source: 'cli' | 'mcp' | 'daemon' = 'cli'): boolean {
     return removeProject(this.db, projectPath, source);
+  }
+
+  touchProject(id: string): void {
+    touchProject(this.db, id);
   }
 
   // ─── Decisions ─────────────────────────────────────────────────────────────
