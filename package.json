@@ -19,7 +19,9 @@
     "lint": "eslint packages/*/src --ext .ts && prettier --check \"packages/*/src/**/*.ts\"",
     "lint:fix": "eslint packages/*/src --ext .ts --fix && prettier --write \"packages/*/src/**/*.ts\"",
     "typecheck": "pnpm -r typecheck",
-    "clean": "pnpm -r clean && rimraf node_modules"
+    "clean": "pnpm -r clean && rimraf node_modules",
+    "tauri:dev": "pnpm --filter @nexus/dashboard tauri:dev",
+    "tauri:build": "pnpm --filter @nexus/dashboard tauri:build"
   },
   "workspaces": [
     "packages/*"

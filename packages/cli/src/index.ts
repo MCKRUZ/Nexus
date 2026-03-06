@@ -8,6 +8,7 @@ import { statusCommand } from './commands/status.js';
 import { hookCommand } from './commands/hook.js';
 import { syncCommand } from './commands/sync.js';
 import { serveCommand } from './commands/serve.js';
+import { installMemoryRuleCommand } from './commands/install-memory-rule.js';
 
 const program = new Command();
 
@@ -24,6 +25,7 @@ program.addCommand(statusCommand());
 program.addCommand(hookCommand());
 program.addCommand(syncCommand());
 program.addCommand(serveCommand());
+program.addCommand(installMemoryRuleCommand());
 
 program.parseAsync(process.argv).catch((err: unknown) => {
   console.error(err instanceof Error ? err.message : err);

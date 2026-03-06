@@ -14,7 +14,7 @@ import {
   type NativeStats,
 } from '../api.js';
 
-type Tab = 'overview' | 'native' | 'traces' | 'sessions' | 'observations' | 'users';
+type Tab = 'overview' | 'native' | 'traces' | 'observations' | 'users';
 type Range = '7d' | '30d' | '90d';
 type SortDir = 'asc' | 'desc' | null;
 type SessionSortKey = 'lastActivity' | 'traces' | 'cost' | 'avgLatency' | 'duration';
@@ -1163,6 +1163,7 @@ function TracesTab() {
   const [searchParams, setSearchParams] = useSearchParams();
   const initSession = searchParams.get('session') ?? '';
 
+  const [viewMode, setViewMode] = useState<'flat' | 'grouped'>('flat');
   const [page, setPage] = useState(1);
   const [nameFilter, setNameFilter] = useState('');
   const [userFilter, setUserFilter] = useState('');
@@ -1227,6 +1228,11 @@ function TracesTab() {
 
   return (
     <>
+      <div style={{ display: 'flex', gap: 4, marginBottom: 4 }}>
+        <button className={`btn${viewMode === 'flat' ? ' btn-primary' : ''}`} onClick={() => setViewMode('flat')}>Flat</button>
+        <button className={`btn${viewMode === 'grouped' ? ' btn-primary' : ''}`} onClick={() => setViewMode('grouped')}>By Session</button>
+      </div>
+      {viewMode === 'grouped' ? <SessionsView /> : (
       <div className="stacked">
         <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', padding: '12px 16px', background: 'var(--bg2)', border: '1px solid var(--border)', borderRadius: 'var(--radius)' }}>
           <div style={{ display: 'flex', gap: 6, flex: 1, flexWrap: 'wrap' }}>
@@ -1270,6 +1276,7 @@ function TracesTab() {
 
         <Pagination page={page} totalPages={totalPages} onChange={setPage} />
       </div>
+      )}
     </>
   );
 }
@@ -1433,7 +1440,7 @@ function SessionAccordion({
   );
 }
 
-function SessionsTab() {
+function SessionsView() {
   const [sessions, setSessions] = useState<LangfuseSession[]>([]);
   const [traces, setTraces] = useState<LangfuseTrace[]>([]);
   const [traceMeta, setTraceMeta] = useState<{ totalItems: number } | null>(null);
@@ -1822,87 +1829,214 @@ function ObservationsTab() {
   );
 }
 
-// ─── NativeEventRow ────────────────────────────────────────────────────────────
+// ─── Conversation view ─────────────────────────────────────────────────────────
 
-function NativeEventRow({ ev }: { ev: NativeEvent }) {
-  const isAssistant = ev.type === 'assistant';
+type ProcessedEvent =
+  | { kind: 'message'; ev: NativeEvent }
+  | { kind: 'tool'; call: NativeEvent; result: NativeEvent | undefined };
 
-  if (ev.toolUse) {
-    return (
-      <details style={{ marginBottom: 5 }}>
-        <summary style={{
-          cursor: 'pointer', padding: '5px 10px', borderRadius: 4,
-          background: 'rgba(88,166,255,0.07)', border: '1px solid rgba(88,166,255,0.15)',
-          fontSize: 11, display: 'flex', alignItems: 'center', gap: 8,
-          listStyle: 'none', userSelect: 'none',
-        }}>
-          <span style={{ fontSize: 9, opacity: 0.5 }}>▶</span>
-          <span style={{ padding: '1px 5px', borderRadius: 3, background: 'rgba(88,166,255,0.15)', color: 'var(--accent)', fontSize: 10, fontWeight: 600 }}>TOOL</span>
-          <span style={{ fontFamily: 'var(--mono)', color: 'var(--text)', fontWeight: 600 }}>{ev.toolUse.name}</span>
-          {ev.text && <span style={{ fontSize: 11, color: 'var(--text2)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1 }}>{ev.text.slice(0, 80)}</span>}
-          <span style={{ fontSize: 10, color: 'var(--text2)', marginLeft: 'auto', flexShrink: 0 }}>{relativeTime(ev.timestamp)}</span>
-        </summary>
-        <div style={{ padding: '8px 10px', background: 'rgba(88,166,255,0.03)', borderRadius: '0 0 4px 4px', border: '1px solid rgba(88,166,255,0.1)', borderTop: 'none' }}>
-          <pre style={{ margin: 0, fontSize: 11, fontFamily: 'var(--mono)', lineHeight: 1.6, whiteSpace: 'pre-wrap', wordBreak: 'break-word', color: 'var(--text)' }}>
-            {JSON.stringify(ev.toolUse.input, null, 2)}
-          </pre>
-        </div>
-      </details>
-    );
+function processEvents(events: NativeEvent[]): ProcessedEvent[] {
+  const resultMap = new Map<string, NativeEvent>();
+  for (const ev of events) {
+    if (ev.toolResult) resultMap.set(ev.toolResult.toolUseId, ev);
   }
-
-  if (ev.toolResult) {
-    const content = ev.toolResult.content;
-    const preview = typeof content === 'string'
-      ? content.slice(0, 500)
-      : JSON.stringify(content, null, 2).slice(0, 500);
-    return (
-      <details style={{ marginBottom: 5 }}>
-        <summary style={{
-          cursor: 'pointer', padding: '5px 10px', borderRadius: 4,
-          background: 'rgba(188,140,255,0.06)', border: '1px solid rgba(188,140,255,0.12)',
-          fontSize: 11, display: 'flex', alignItems: 'center', gap: 8,
-          listStyle: 'none', userSelect: 'none',
-        }}>
-          <span style={{ fontSize: 9, opacity: 0.5 }}>▶</span>
-          <span style={{ padding: '1px 5px', borderRadius: 3, background: 'rgba(188,140,255,0.15)', color: 'var(--purple)', fontSize: 10, fontWeight: 600 }}>RESULT</span>
-          <span style={{ fontSize: 10, color: 'var(--text2)', marginLeft: 'auto', flexShrink: 0 }}>{relativeTime(ev.timestamp)}</span>
-        </summary>
-        <div style={{ padding: '8px 10px', background: 'rgba(188,140,255,0.03)', borderRadius: '0 0 4px 4px', border: '1px solid rgba(188,140,255,0.1)', borderTop: 'none' }}>
-          <pre style={{ margin: 0, fontSize: 11, fontFamily: 'var(--mono)', lineHeight: 1.6, whiteSpace: 'pre-wrap', wordBreak: 'break-word', color: 'var(--text2)' }}>
-            {preview}
-          </pre>
-        </div>
-      </details>
-    );
+  const out: ProcessedEvent[] = [];
+  for (const ev of events) {
+    if (ev.toolResult) continue; // consumed via resultMap
+    if (ev.toolUse) {
+      out.push({ kind: 'tool', call: ev, result: resultMap.get(ev.toolUse.id) });
+    } else if (ev.text) {
+      out.push({ kind: 'message', ev });
+    }
   }
+  return out;
+}
 
-  if (ev.text) {
-    const style = isAssistant
-      ? { bg: 'rgba(121,192,255,0.07)', border: 'rgba(121,192,255,0.15)', roleColor: '#79c0ff', role: 'ASSISTANT' }
-      : { bg: 'rgba(88,166,255,0.07)', border: 'rgba(88,166,255,0.15)', roleColor: 'var(--accent)', role: 'USER' };
-    return (
-      <div style={{ marginBottom: 5, padding: '7px 10px', borderRadius: 4, background: style.bg, border: `1px solid ${style.border}` }}>
-        <div style={{ fontSize: 9, color: style.roleColor, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.5px', marginBottom: 4, display: 'flex', justifyContent: 'space-between' }}>
-          <span>{style.role}</span>
-          <span style={{ fontWeight: 400, opacity: 0.6 }}>{relativeTime(ev.timestamp)}</span>
-        </div>
-        <div style={{ fontSize: 12, color: 'var(--text)', whiteSpace: 'pre-wrap', wordBreak: 'break-word', lineHeight: 1.65 }}>
-          {ev.text.length > 800 ? ev.text.slice(0, 800) + '…' : ev.text}
-        </div>
+// Color coding per tool name
+const TOOL_COLORS: Record<string, { bg: string; border: string; text: string }> = {
+  Read:   { bg: 'rgba(88,166,255,0.07)',  border: 'rgba(88,166,255,0.2)',  text: '#58a6ff' },
+  Write:  { bg: 'rgba(126,232,162,0.07)', border: 'rgba(126,232,162,0.2)', text: '#7ee8a2' },
+  Edit:   { bg: 'rgba(126,232,162,0.07)', border: 'rgba(126,232,162,0.2)', text: '#7ee8a2' },
+  Bash:   { bg: 'rgba(240,136,62,0.07)',  border: 'rgba(240,136,62,0.2)',  text: '#f0883e' },
+  Glob:   { bg: 'rgba(188,140,255,0.07)', border: 'rgba(188,140,255,0.2)', text: '#bc8cff' },
+  Grep:   { bg: 'rgba(188,140,255,0.07)', border: 'rgba(188,140,255,0.2)', text: '#bc8cff' },
+  Agent:  { bg: 'rgba(255,210,80,0.07)',  border: 'rgba(255,210,80,0.2)',  text: '#ffd250' },
+};
+const TOOL_DEFAULT = { bg: 'rgba(150,150,150,0.07)', border: 'rgba(150,150,150,0.2)', text: 'var(--text2)' };
+
+function ToolCallRow({ call, result }: { call: NativeEvent; result: NativeEvent | undefined }) {
+  const [open, setOpen] = useState(false);
+  const tool = call.toolUse!;
+  const colors = TOOL_COLORS[tool.name] ?? TOOL_DEFAULT;
+  const input = tool.input as Record<string, unknown> | null;
+
+  // First string value from input as preview
+  const preview = input
+    ? (Object.values(input).find(v => typeof v === 'string') as string | undefined)
+    : undefined;
+
+  const resultContent = result?.toolResult?.content;
+  const resultText = resultContent == null ? '' :
+    typeof resultContent === 'string' ? resultContent :
+    JSON.stringify(resultContent, null, 2);
+
+  return (
+    <div style={{ marginBottom: 4 }}>
+      <div
+        role="button" tabIndex={0}
+        onClick={() => setOpen(o => !o)}
+        onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setOpen(o => !o); } }}
+        style={{
+          display: 'flex', alignItems: 'center', gap: 8,
+          padding: '5px 10px', borderRadius: open ? '4px 4px 0 0' : 4,
+          background: colors.bg, border: `1px solid ${colors.border}`,
+          cursor: 'pointer', userSelect: 'none',
+        }}
+      >
+        <span style={{ fontSize: 8, opacity: 0.45, flexShrink: 0 }}>{open ? '▼' : '▶'}</span>
+        <span style={{ padding: '1px 7px', borderRadius: 3, background: colors.border, color: colors.text, fontSize: 10, fontWeight: 700, flexShrink: 0, fontFamily: 'var(--mono)' }}>
+          {tool.name}
+        </span>
+        {preview && (
+          <span style={{ fontSize: 11, color: 'var(--text2)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1, fontFamily: 'var(--mono)' }}>
+            {preview.length > 100 ? preview.slice(0, 100) + '…' : preview}
+          </span>
+        )}
+        <span style={{ fontSize: 10, color: 'var(--text2)', marginLeft: 'auto', flexShrink: 0, opacity: 0.6 }}>
+          {relativeTime(call.timestamp)}
+        </span>
       </div>
-    );
-  }
+      {open && (
+        <div style={{ border: `1px solid ${colors.border}`, borderTop: 'none', borderRadius: '0 0 4px 4px', overflow: 'hidden' }}>
+          <div style={{ padding: '10px 12px', background: 'rgba(0,0,0,0.2)' }}>
+            <div style={{ fontSize: 10, color: colors.text, fontWeight: 600, marginBottom: 6, letterSpacing: '0.4px' }}>INPUT</div>
+            <pre style={{ margin: 0, fontSize: 11, fontFamily: 'var(--mono)', lineHeight: 1.65, whiteSpace: 'pre-wrap', wordBreak: 'break-word', color: 'var(--text)' }}>
+              {JSON.stringify(input, null, 2)}
+            </pre>
+          </div>
+          {resultText && (
+            <div style={{ padding: '10px 12px', background: 'rgba(0,0,0,0.3)', borderTop: `1px solid ${colors.border}` }}>
+              <div style={{ fontSize: 10, color: 'var(--text2)', fontWeight: 600, marginBottom: 6, letterSpacing: '0.4px' }}>OUTPUT</div>
+              <pre style={{ margin: 0, fontSize: 11, fontFamily: 'var(--mono)', lineHeight: 1.65, whiteSpace: 'pre-wrap', wordBreak: 'break-word', color: 'var(--text2)' }}>
+                {resultText.length > 3000 ? resultText.slice(0, 3000) + '\n… (truncated)' : resultText}
+              </pre>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
 
-  return null;
+function MessageRow({ ev }: { ev: NativeEvent }) {
+  const isUser = ev.type === 'user';
+  const accentColor = isUser ? '#58a6ff' : '#7ee8a2';
+  const bg = isUser ? 'rgba(88,166,255,0.05)' : 'rgba(126,232,162,0.05)';
+  const label = isUser ? 'USER' : 'ASSISTANT';
+  return (
+    <div style={{ marginBottom: 8 }}>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 3, paddingLeft: 2 }}>
+        <span style={{ fontSize: 10, fontWeight: 700, letterSpacing: '0.6px', color: accentColor }}>{label}</span>
+        <span style={{ fontSize: 10, color: 'var(--text2)', opacity: 0.55 }}>{relativeTime(ev.timestamp)}</span>
+      </div>
+      <div style={{
+        padding: '8px 12px',
+        borderRadius: 4,
+        borderLeft: `2px solid ${accentColor}`,
+        background: bg,
+        fontSize: 12,
+        color: 'var(--text)',
+        whiteSpace: 'pre-wrap',
+        wordBreak: 'break-word',
+        lineHeight: 1.7,
+      }}>
+        {ev.text!.length > 1200 ? ev.text!.slice(0, 1200) + '\n… (truncated)' : ev.text}
+      </div>
+    </div>
+  );
+}
+
+function ConversationView({ events }: { events: NativeEvent[] }) {
+  const [newestFirst, setNewestFirst] = useState(true);
+  const processed = useMemo(() => {
+    const p = processEvents(events);
+    return newestFirst ? [...p].reverse() : p;
+  }, [events, newestFirst]);
+
+  if (processed.length === 0) return <div className="empty">No events recorded</div>;
+  return (
+    <div>
+      <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: 8 }}>
+        <button
+          className="btn"
+          onClick={() => setNewestFirst(v => !v)}
+          style={{ fontSize: 11, padding: '2px 8px' }}
+        >
+          {newestFirst ? '↓ Newest first' : '↑ Oldest first'}
+        </button>
+      </div>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+        {processed.map(item =>
+          item.kind === 'tool'
+            ? <ToolCallRow key={item.call.uuid} call={item.call} result={item.result} />
+            : <MessageRow key={item.ev.uuid} ev={item.ev} />
+        )}
+      </div>
+    </div>
+  );
 }
 
 // ─── NativeSessionsTab ─────────────────────────────────────────────────────────
+
+interface NativeSessionGroup {
+  cwd: string;
+  projName: string;
+  sessions: NativeSession[];
+  totalTurns: number;
+  totalTools: number;
+  totalDurationMs: number;
+  latestAt: string;
+  latestBranch: string;
+}
+
+function buildGroups(sessions: NativeSession[]): NativeSessionGroup[] {
+  const map = new Map<string, NativeSession[]>();
+  for (const s of sessions) {
+    const key = s.cwd ?? '__unknown__';
+    const bucket = map.get(key) ?? [];
+    bucket.push(s);
+    map.set(key, bucket);
+  }
+  return Array.from(map.entries())
+    .map(([cwd, list]) => {
+      const sorted = [...list].sort((a, b) =>
+        (b.lastActivityAt ?? b.startedAt ?? '').localeCompare(a.lastActivityAt ?? a.startedAt ?? ''),
+      );
+      const latest = sorted[0]!;
+      return {
+        cwd,
+        projName: cwd && cwd !== '__unknown__'
+          ? cwd.replace(/\\/g, '/').split('/').filter(Boolean).pop() ?? cwd
+          : '—',
+        sessions: sorted,
+        totalTurns: list.reduce((n, s) => n + (s.userTurns ?? 0), 0),
+        totalTools: list.reduce((n, s) => n + (s.toolCalls ?? 0), 0),
+        totalDurationMs: list.reduce((n, s) => {
+          if (!s.startedAt || !s.lastActivityAt) return n;
+          return n + (new Date(s.lastActivityAt).getTime() - new Date(s.startedAt).getTime());
+        }, 0),
+        latestAt: latest.lastActivityAt ?? latest.startedAt ?? '',
+        latestBranch: latest.gitBranch ?? '—',
+      };
+    })
+    .sort((a, b) => b.latestAt.localeCompare(a.latestAt));
+}
 
 function NativeSessionsTab() {
   const [sessions, setSessions] = useState<NativeSession[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
+  const [expandedGroups, setExpandedGroups] = useState<Set<string>>(new Set());
   const [expandedPath, setExpandedPath] = useState<string | null>(null);
   const [detail, setDetail] = useState<NativeSessionDetail | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
@@ -1915,7 +2049,17 @@ function NativeSessionsTab() {
       .finally(() => setLoading(false));
   }, []);
 
-  const toggleExpand = (jsonlPath: string) => {
+  const groups = useMemo(() => buildGroups(sessions), [sessions]);
+
+  const toggleGroup = (cwd: string) => {
+    setExpandedGroups(prev => {
+      const next = new Set(prev);
+      if (next.has(cwd)) { next.delete(cwd); } else { next.add(cwd); }
+      return next;
+    });
+  };
+
+  const toggleSession = (jsonlPath: string) => {
     if (expandedPath === jsonlPath) {
       setExpandedPath(null);
       setDetail(null);
@@ -1934,109 +2078,176 @@ function NativeSessionsTab() {
   if (loading) return <div className="loading" role="status">Loading sessions…</div>;
   if (error) return <div className="error-banner" role="alert">{error}</div>;
 
-  const SESSION_COLS = '150px 1fr 120px 80px 80px 80px';
+  const GROUP_COLS = '1fr 140px 110px 90px 70px 70px';
+  const SESSION_COLS = '140px 110px 90px 70px 70px';
 
   return (
     <div className="stacked">
       <div className="section-header">
         <span className="section-title">Claude Code Sessions</span>
-        <span style={{ fontSize: 12, color: 'var(--text2)' }}>{sessions.length} sessions · from ~/.claude/projects/</span>
+        <span style={{ fontSize: 12, color: 'var(--text2)' }}>
+          {groups.length} projects · {sessions.length} sessions · from ~/.claude/projects/
+        </span>
       </div>
       <div className="card" style={{ padding: 0, overflow: 'hidden' }}>
         {/* Header */}
-        <div style={{ display: 'grid', gridTemplateColumns: SESSION_COLS, gap: '0 12px', padding: '7px 16px', borderBottom: '1px solid var(--border)', background: 'var(--bg)', position: 'sticky', top: 0, zIndex: 1 }}>
-          {(['Started', 'Project', 'Branch', 'Duration', 'Turns', 'Tools'] as const).map(h => (
+        <div style={{ display: 'grid', gridTemplateColumns: GROUP_COLS, gap: '0 12px', padding: '7px 16px', borderBottom: '1px solid var(--border)', background: 'var(--bg)', position: 'sticky', top: 0, zIndex: 1 }}>
+          {(['Project', 'Last Active', 'Branch', 'Duration', 'Turns', 'Tools'] as const).map(h => (
             <div key={h} style={{ fontSize: 11, color: 'var(--text2)', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.4px' }}>{h}</div>
           ))}
         </div>
 
-        {sessions.length === 0
+        {groups.length === 0
           ? <div className="empty">No sessions found in ~/.claude/projects/</div>
-          : sessions.map(s => {
-            const isExpanded = expandedPath === s.jsonlPath;
-            const projName = s.cwd
-              ? s.cwd.replace(/\\/g, '/').split('/').filter(Boolean).pop() ?? s.cwd
-              : '—';
-            const durationMs = s.startedAt && s.lastActivityAt
-              ? new Date(s.lastActivityAt).getTime() - new Date(s.startedAt).getTime()
-              : 0;
-
+          : groups.map(g => {
+            const isGroupOpen = expandedGroups.has(g.cwd);
             return (
-              <Fragment key={s.jsonlPath}>
+              <Fragment key={g.cwd}>
+                {/* ── Project group row ── */}
                 <div
                   role="button"
                   tabIndex={0}
-                  aria-expanded={isExpanded}
-                  onClick={() => toggleExpand(s.jsonlPath)}
-                  onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggleExpand(s.jsonlPath); } }}
+                  aria-expanded={isGroupOpen}
+                  onClick={() => toggleGroup(g.cwd)}
+                  onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggleGroup(g.cwd); } }}
                   style={{
-                    display: 'grid', gridTemplateColumns: SESSION_COLS, gap: '0 12px',
-                    padding: '10px 16px', borderBottom: '1px solid var(--border)',
+                    display: 'grid', gridTemplateColumns: GROUP_COLS, gap: '0 12px',
+                    padding: '11px 16px', borderBottom: '1px solid var(--border)',
                     cursor: 'pointer', alignItems: 'center', fontSize: 12,
-                    background: isExpanded ? 'rgba(88,166,255,0.04)' : undefined,
+                    background: isGroupOpen ? 'rgba(88,166,255,0.04)' : undefined,
                     transition: 'background 0.1s',
                   }}
-                  onMouseEnter={e => { (e.currentTarget as HTMLDivElement).style.background = 'var(--bg3)'; }}
-                  onMouseLeave={e => { (e.currentTarget as HTMLDivElement).style.background = isExpanded ? 'rgba(88,166,255,0.04)' : ''; }}
+                  onMouseEnter={e => { if (!isGroupOpen) (e.currentTarget as HTMLDivElement).style.background = 'var(--bg3)'; }}
+                  onMouseLeave={e => { (e.currentTarget as HTMLDivElement).style.background = isGroupOpen ? 'rgba(88,166,255,0.04)' : ''; }}
                 >
-                  <div style={{ fontSize: 11, color: 'var(--text2)', display: 'flex', alignItems: 'center', gap: 5 }}>
-                    <span style={{ opacity: 0.4, fontSize: 9, userSelect: 'none' }} aria-hidden="true">{isExpanded ? '▼' : '▶'}</span>
-                    {s.startedAt ? relativeTime(s.startedAt) : '—'}
+                  {/* Project name + session count */}
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 7, minWidth: 0 }}>
+                    <span style={{ opacity: 0.45, fontSize: 9, userSelect: 'none', flexShrink: 0 }} aria-hidden="true">
+                      {isGroupOpen ? '▼' : '▶'}
+                    </span>
+                    <span style={{ fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={g.cwd}>
+                      {g.projName}
+                    </span>
+                    <span style={{ fontSize: 10, padding: '1px 6px', borderRadius: 10, background: 'var(--bg3)', border: '1px solid var(--border)', color: 'var(--text2)', flexShrink: 0, fontVariantNumeric: 'tabular-nums' }}>
+                      {g.sessions.length}
+                    </span>
                   </div>
-                  <div style={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontWeight: 500, color: 'var(--text)' }} title={s.cwd}>
-                    {projName}
+                  {/* Last active */}
+                  <div style={{ fontSize: 11, color: 'var(--text2)' }}>
+                    {g.latestAt ? relativeTime(g.latestAt) : '—'}
                   </div>
-                  <div style={{ fontSize: 11, color: 'var(--text2)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                    {s.gitBranch ?? '—'}
+                  {/* Branch of latest session */}
+                  <div style={{ fontSize: 11, color: 'var(--text2)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontFamily: 'var(--mono)' }}>
+                    {g.latestBranch}
                   </div>
+                  {/* Total duration */}
                   <div style={{ fontSize: 11, color: 'var(--text2)', fontVariantNumeric: 'tabular-nums' }}>
-                    {durationMs > 0 ? formatDuration(durationMs) : '—'}
+                    {g.totalDurationMs > 0 ? formatDuration(g.totalDurationMs) : '—'}
                   </div>
-                  <div style={{ fontVariantNumeric: 'tabular-nums' }}>{s.userTurns}</div>
-                  <div style={{ fontVariantNumeric: 'tabular-nums', color: s.toolCalls > 0 ? 'var(--accent)' : 'var(--text2)' }}>{s.toolCalls}</div>
+                  {/* Total turns */}
+                  <div style={{ fontVariantNumeric: 'tabular-nums' }}>{g.totalTurns}</div>
+                  {/* Total tools */}
+                  <div style={{ fontVariantNumeric: 'tabular-nums', color: g.totalTools > 0 ? 'var(--accent)' : 'var(--text2)' }}>
+                    {g.totalTools}
+                  </div>
                 </div>
 
-                {isExpanded && (
-                  <div style={{ borderBottom: '1px solid var(--border)', background: 'var(--bg)' }}>
-                    {/* Chip row */}
-                    <div style={{ padding: '8px 16px', display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center', fontSize: 11, borderBottom: '1px solid var(--border)', background: 'rgba(255,255,255,0.015)' }}>
-                      {durationMs > 0 && (
-                        <span style={{ padding: '1px 7px', borderRadius: 10, background: 'rgba(255,255,255,0.05)', border: '1px solid var(--border)', color: 'var(--text2)' }}>
-                          Duration: <span style={{ color: 'var(--text)', fontWeight: 600 }}>{formatDuration(durationMs)}</span>
-                        </span>
-                      )}
-                      {s.gitBranch && (
-                        <span style={{ padding: '1px 7px', borderRadius: 10, background: 'rgba(88,166,255,0.08)', border: '1px solid rgba(88,166,255,0.2)', color: 'var(--accent)', fontFamily: 'var(--mono)', fontSize: 10 }}>
-                          {s.gitBranch}
-                        </span>
-                      )}
-                      <span style={{ padding: '1px 7px', borderRadius: 10, background: 'rgba(255,255,255,0.05)', border: '1px solid var(--border)', color: 'var(--text2)' }}>
-                        {s.toolCalls} tool calls
-                      </span>
-                      <span style={{ padding: '1px 7px', borderRadius: 10, background: 'rgba(255,255,255,0.05)', border: '1px solid var(--border)', color: 'var(--text2)' }}>
-                        {s.userTurns} user turns
-                      </span>
-                      <span style={{ fontSize: 10, color: 'var(--text2)', fontFamily: 'var(--mono)', marginLeft: 'auto', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: 400 }} title={s.cwd}>
-                        {s.cwd}
-                      </span>
-                    </div>
-
-                    {/* Event timeline */}
-                    {detailLoading && expandedPath === s.jsonlPath && (
-                      <div className="loading" style={{ padding: '12px 16px' }}>Loading events…</div>
-                    )}
-                    {detailError && expandedPath === s.jsonlPath && (
-                      <div className="error-banner" style={{ margin: '8px 16px' }}>{detailError}</div>
-                    )}
-                    {detail && detail.jsonlPath === s.jsonlPath && (
-                      <div style={{ maxHeight: 420, overflowY: 'auto', padding: '10px 12px' }}>
-                        {detail.events.length === 0
-                          ? <div className="empty">No events recorded</div>
-                          : detail.events.map(ev => <NativeEventRow key={ev.uuid} ev={ev} />)}
+                {/* ── Session rows (expanded group) ── */}
+                {isGroupOpen && g.sessions.map(s => {
+                  const isExpanded = expandedPath === s.jsonlPath;
+                  const durationMs = s.startedAt && s.lastActivityAt
+                    ? new Date(s.lastActivityAt).getTime() - new Date(s.startedAt).getTime()
+                    : 0;
+                  return (
+                    <Fragment key={s.jsonlPath}>
+                      <div
+                        role="button"
+                        tabIndex={0}
+                        aria-expanded={isExpanded}
+                        onClick={() => toggleSession(s.jsonlPath)}
+                        onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggleSession(s.jsonlPath); } }}
+                        style={{
+                          display: 'grid',
+                          gridTemplateColumns: `32px ${SESSION_COLS}`,
+                          gap: '0 12px',
+                          padding: '8px 16px',
+                          borderBottom: '1px solid var(--border)',
+                          borderLeft: '2px solid rgba(88,166,255,0.25)',
+                          cursor: 'pointer', alignItems: 'center', fontSize: 11,
+                          background: isExpanded ? 'rgba(88,166,255,0.05)' : 'rgba(255,255,255,0.01)',
+                          transition: 'background 0.1s',
+                        }}
+                        onMouseEnter={e => { (e.currentTarget as HTMLDivElement).style.background = 'var(--bg3)'; }}
+                        onMouseLeave={e => { (e.currentTarget as HTMLDivElement).style.background = isExpanded ? 'rgba(88,166,255,0.05)' : 'rgba(255,255,255,0.01)'; }}
+                      >
+                        {/* Indent + expand toggle */}
+                        <div style={{ display: 'flex', justifyContent: 'center' }}>
+                          <span style={{ opacity: 0.35, fontSize: 8, userSelect: 'none' }} aria-hidden="true">
+                            {isExpanded ? '▼' : '▶'}
+                          </span>
+                        </div>
+                        {/* Started */}
+                        <div style={{ color: 'var(--text2)' }}>
+                          {s.startedAt ? relativeTime(s.startedAt) : '—'}
+                        </div>
+                        {/* Branch */}
+                        <div style={{ color: 'var(--text2)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontFamily: 'var(--mono)', fontSize: 10 }}>
+                          {s.gitBranch ?? '—'}
+                        </div>
+                        {/* Duration */}
+                        <div style={{ color: 'var(--text2)', fontVariantNumeric: 'tabular-nums' }}>
+                          {durationMs > 0 ? formatDuration(durationMs) : '—'}
+                        </div>
+                        {/* Turns */}
+                        <div style={{ fontVariantNumeric: 'tabular-nums' }}>{s.userTurns}</div>
+                        {/* Tools */}
+                        <div style={{ fontVariantNumeric: 'tabular-nums', color: s.toolCalls > 0 ? 'var(--accent)' : 'var(--text2)' }}>
+                          {s.toolCalls}
+                        </div>
                       </div>
-                    )}
-                  </div>
-                )}
+
+                      {/* Session detail panel */}
+                      {isExpanded && (
+                        <div style={{ borderBottom: '1px solid var(--border)', borderLeft: '2px solid rgba(88,166,255,0.25)', background: 'var(--bg)' }}>
+                          {/* Chip row */}
+                          <div style={{ padding: '8px 16px', display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center', fontSize: 11, borderBottom: '1px solid var(--border)', background: 'rgba(255,255,255,0.015)' }}>
+                            {durationMs > 0 && (
+                              <span style={{ padding: '1px 7px', borderRadius: 10, background: 'rgba(255,255,255,0.05)', border: '1px solid var(--border)', color: 'var(--text2)' }}>
+                                Duration: <span style={{ color: 'var(--text)', fontWeight: 600 }}>{formatDuration(durationMs)}</span>
+                              </span>
+                            )}
+                            {s.gitBranch && (
+                              <span style={{ padding: '1px 7px', borderRadius: 10, background: 'rgba(88,166,255,0.08)', border: '1px solid rgba(88,166,255,0.2)', color: 'var(--accent)', fontFamily: 'var(--mono)', fontSize: 10 }}>
+                                {s.gitBranch}
+                              </span>
+                            )}
+                            <span style={{ padding: '1px 7px', borderRadius: 10, background: 'rgba(255,255,255,0.05)', border: '1px solid var(--border)', color: 'var(--text2)' }}>
+                              {s.toolCalls} tool calls
+                            </span>
+                            <span style={{ padding: '1px 7px', borderRadius: 10, background: 'rgba(255,255,255,0.05)', border: '1px solid var(--border)', color: 'var(--text2)' }}>
+                              {s.userTurns} user turns
+                            </span>
+                            <span style={{ fontSize: 10, color: 'var(--text2)', fontFamily: 'var(--mono)', marginLeft: 'auto', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: 400 }} title={s.cwd}>
+                              {s.cwd}
+                            </span>
+                          </div>
+                          {/* Event timeline */}
+                          {detailLoading && expandedPath === s.jsonlPath && (
+                            <div className="loading" style={{ padding: '12px 16px' }}>Loading events…</div>
+                          )}
+                          {detailError && expandedPath === s.jsonlPath && (
+                            <div className="error-banner" style={{ margin: '8px 16px' }}>{detailError}</div>
+                          )}
+                          {detail && detail.jsonlPath === s.jsonlPath && (
+                            <div style={{ maxHeight: 560, overflowY: 'auto', padding: '12px 14px' }}>
+                              <ConversationView events={detail.events} />
+                            </div>
+                          )}
+                        </div>
+                      )}
+                    </Fragment>
+                  );
+                })}
               </Fragment>
             );
           })}
@@ -2078,8 +2289,7 @@ function LangfuseGateNotice() {
 const TABS: { id: Tab; label: string }[] = [
   { id: 'overview', label: 'Overview' },
   { id: 'native', label: 'Sessions' },
-  { id: 'traces', label: 'Traces' },
-  { id: 'sessions', label: 'LF Sessions' },
+  { id: 'traces', label: 'LLM Traces' },
   { id: 'observations', label: 'Observations' },
   { id: 'users', label: 'Users' },
 ];
@@ -2110,7 +2320,6 @@ export function Observability() {
       {tab === 'overview' && <OverviewTab langfuseConfigured={langfuseConfigured} />}
       {tab === 'native' && <NativeSessionsTab />}
       {tab === 'traces' && (langfuseConfigured ? <TracesTab /> : <LangfuseGateNotice />)}
-      {tab === 'sessions' && (langfuseConfigured ? <SessionsTab /> : <LangfuseGateNotice />)}
       {tab === 'observations' && (langfuseConfigured ? <ObservationsTab /> : <LangfuseGateNotice />)}
       {tab === 'users' && (langfuseConfigured ? <UsersTab /> : <LangfuseGateNotice />)}
     </div>

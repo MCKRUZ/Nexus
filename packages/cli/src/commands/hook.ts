@@ -27,7 +27,8 @@ import { Command } from 'commander';
 import path from 'node:path';
 import { log } from '../lib/output.js';
 import { openService } from '../lib/service.js';
-import { detectConflicts } from '@nexus/core';
+import { detectConflicts, syncClaudeMd } from '@nexus/core';
+import type { Conflict } from '@nexus/core';
 
 export function hookCommand(): Command {
   const cmd = new Command('hook');
@@ -68,25 +69,55 @@ export function hookCommand(): Command {
           }
           output(`Session recorded for: ${project.name}`);
 
-          // 2. Conflict detection — compare this project's decisions against others
           const projectDecisions = svc.getDecisionsForProject(project.id);
+          const allProjects = svc.listProjects();
+          const { conflicts } = svc.checkConflicts([project.id]);
+          const otherProjects = allProjects.filter((p) => p.id !== project.id);
+          const relatedProjects = otherProjects
+            .filter((p) => p.parentId === project.id || project.parentId === p.id)
+            .map((p) => ({ name: p.name, path: p.path }));
+          const relatedProjectNotes = otherProjects
+            .map((p) => ({ projectName: p.name, notes: svc.getNotesForProject(p.id) }))
+            .filter((rpn) => rpn.notes.length > 0);
+
+          // 2. Sync CLAUDE.md so notes/decisions are ready for the next session
+          try {
+            if (!opts.dryRun) {
+              const result = syncClaudeMd({
+                projectPath: project.path,
+                notes: svc.getNotesForProject(project.id),
+                relatedProjectNotes,
+                decisions: projectDecisions,
+                patterns: svc.getPatternsForProject(project.id),
+                preferences: svc.listPreferences(project.id),
+                conflicts: conflicts as Conflict[],
+                relatedProjects,
+              });
+              if (result.updated) {
+                output(`CLAUDE.md synced: ${project.name}`);
+              }
+            }
+          } catch {
+            // Sync is best-effort — never block session teardown
+          }
+
+          // 3. Conflict detection — compare this project's decisions against others
           if (projectDecisions.length === 0) return;
 
-          const otherProjects = svc
-            .listProjects()
-            .filter((p) => p.id !== project.id && svc.getDecisionsForProject(p.id).length > 0)
+          const conflictProjects = otherProjects
+            .filter((p) => svc.getDecisionsForProject(p.id).length > 0)
             .slice(0, 3); // cap at 3 to keep hook fast
 
-          for (const other of otherProjects) {
+          for (const other of conflictProjects) {
             const otherDecisions = svc.getDecisionsForProject(other.id);
 
             try {
-              const conflicts = await detectConflicts({
+              const newConflicts = await detectConflicts({
                 projectA: { id: project.id, name: project.name, decisions: projectDecisions },
                 projectB: { id: other.id, name: other.name, decisions: otherDecisions },
               });
 
-              for (const conflict of conflicts) {
+              for (const conflict of newConflicts) {
                 if (!opts.dryRun) {
                   svc.recordConflict(conflict.projectIds, conflict.description, 'daemon');
                 }

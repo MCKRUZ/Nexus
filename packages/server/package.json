@@ -9,15 +9,20 @@
     "build": "tsc -p tsconfig.json",
     "dev": "tsc -p tsconfig.json --watch",
     "typecheck": "tsc --noEmit",
-    "clean": "rimraf dist"
+    "clean": "rimraf dist",
+    "bundle": "esbuild src/index.ts --bundle --platform=node --format=cjs --outfile=dist/bundle.cjs --external:better-sqlite3",
+    "compile": "pnpm bundle && pkg dist/bundle.cjs --config pkg.json --target node22-win-x64 --output ../dashboard/src-tauri/binaries/nexus-server-x86_64-pc-windows-msvc.exe"
   },
   "dependencies": {
     "@hono/node-server": "^1.13.0",
     "@nexus/core": "workspace:*",
+    "better-sqlite3": "^11.0.0",
     "hono": "^4.6.0"
   },
   "devDependencies": {
     "@types/node": "^20.0.0",
+    "@yao-pkg/pkg": "^5.16.1",
+    "esbuild": "^0.25.12",
     "rimraf": "^5.0.0",
     "typescript": "^5.5.0"
   }

@@ -69,6 +69,24 @@ const MIGRATIONS: Array<{ version: number; up: string }> = [
       CREATE INDEX IF NOT EXISTS idx_audit_at ON audit_log(at);
     `,
   },
+  {
+    version: 2,
+    up: `
+      CREATE TABLE IF NOT EXISTS notes (
+        id         TEXT PRIMARY KEY,
+        project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+        title      TEXT NOT NULL,
+        content    TEXT NOT NULL,
+        tags       TEXT NOT NULL DEFAULT '[]',
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL,
+        source     TEXT NOT NULL DEFAULT 'mcp',
+        UNIQUE(project_id, title)
+      );
+      CREATE INDEX IF NOT EXISTS idx_notes_project ON notes(project_id);
+      CREATE INDEX IF NOT EXISTS idx_notes_updated ON notes(updated_at);
+    `,
+  },
 ];
 
 export function migrateDatabase(db: NexusDb): void {

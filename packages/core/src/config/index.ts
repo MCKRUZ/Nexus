@@ -14,7 +14,7 @@ export interface NexusConfig {
   /** API key for Anthropic / local proxy. Falls back to ANTHROPIC_API_KEY env var. */
   anthropicApiKey?: string;
   /**
-   * Base URL for Anthropic API or a local proxy (e.g. http://bablyon:4040).
+   * Base URL for Anthropic API or a local proxy (e.g. http://your-proxy.internal:4040).
    * Falls back to ANTHROPIC_BASE_URL env var. When set without an apiKey,
    * a placeholder key is used so the Anthropic SDK doesn't throw.
    */
@@ -58,7 +58,7 @@ export interface AnthropicAuth {
   apiKey?: string;
   /** OAuth Bearer token. Used when authenticating via Claude Code OAuth. */
   authToken?: string;
-  /** Custom base URL for a local proxy (e.g. http://bablyon:4040). */
+  /** Custom base URL for a local proxy (e.g. http://your-proxy.internal:4040). */
   baseURL?: string;
 }
 

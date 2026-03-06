@@ -12,6 +12,7 @@ build/
 # Rust / Tauri
 target/
 packages/dashboard/src-tauri/target/
+packages/dashboard/src-tauri/binaries/*.exe
 
 # Environment & secrets
 .env

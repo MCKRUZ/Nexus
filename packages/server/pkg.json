@@ -1,0 +1,13 @@
+{
+  "pkg": {
+    "scripts": [
+      "node_modules/better-sqlite3/lib/**/*.js",
+      "node_modules/better-sqlite3/node_modules/bindings/*.js",
+      "node_modules/bindings/*.js"
+    ],
+    "assets": [
+      "node_modules/better-sqlite3/build/Release/better_sqlite3.node"
+    ],
+    "outputPath": "dist"
+  }
+}

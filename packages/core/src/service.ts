@@ -33,8 +33,19 @@ import {
   listPreferences,
 } from './repositories/preference.js';
 import { checkConflicts, createConflict, resolveConflict } from './repositories/conflict.js';
-import type { Project, Decision, Pattern, Preference, Conflict } from './types/index.js';
+import {
+  findNotesByProject,
+  findNoteById,
+  findNoteByTitle,
+  searchNotes,
+  upsertNote,
+  deleteNote,
+  type UpsertNoteParams,
+} from './repositories/note.js';
+import type { Project, Decision, Pattern, Preference, Conflict, Note } from './types/index.js';
 import type { DecisionKind } from './types/index.js';
+
+export type { UpsertNoteParams };
 
 export interface QueryOptions {
   query: string;
@@ -168,6 +179,35 @@ export class NexusService {
     source: 'cli' | 'mcp' | 'daemon' = 'cli',
   ): boolean {
     return resolveConflict(this.db, conflictId, resolution, source);
+  }
+
+  // ─── Notes ─────────────────────────────────────────────────────────────────
+
+  getNotesForProject(projectId: string): Note[] {
+    return findNotesByProject(this.db, projectId);
+  }
+
+  getNoteById(id: string): Note | undefined {
+    return findNoteById(this.db, id);
+  }
+
+  getNoteByTitle(projectId: string, title: string): Note | undefined {
+    return findNoteByTitle(this.db, projectId, title);
+  }
+
+  searchNotes(query: string, projectId?: string): Note[] {
+    return searchNotes(this.db, query, projectId);
+  }
+
+  upsertNote(
+    params: UpsertNoteParams,
+    source: 'cli' | 'mcp' | 'daemon' = 'mcp',
+  ): Note {
+    return upsertNote(this.db, params, source);
+  }
+
+  deleteNote(id: string, source: 'cli' | 'mcp' | 'daemon' = 'mcp'): boolean {
+    return deleteNote(this.db, id, source);
   }
 
   // ─── Cross-entity query ────────────────────────────────────────────────────

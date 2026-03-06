@@ -47,8 +47,9 @@ export function initCommand(): Command {
       log.success('Nexus initialized successfully!');
       console.log('');
       log.plain('  Next steps:');
-      log.plain('    nexus project add <path>   Register your first project');
-      log.plain('    nexus project list          View registered projects');
+      log.plain('    nexus project add <path>       Register your first project');
+      log.plain('    nexus project list              View registered projects');
+      log.plain('    nexus install-memory-rule       Teach Claude to query Nexus automatically');
       console.log('');
       log.warn(
         'Your encryption key is stored in ' +

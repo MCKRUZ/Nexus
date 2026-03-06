@@ -419,6 +419,183 @@ server.tool(
   },
 );
 
+// ─── nexus_note ───────────────────────────────────────────────────────────────
+
+server.tool(
+  'nexus_note',
+  'Manage project notes — freeform context blocks that persist per-project and appear in CLAUDE.md. Use "set" to write/update a note, "list" to see all notes for a project, "get" to read one note, "delete" to remove a note, and "search" to find notes across projects.',
+  {
+    action: z.enum(['get', 'list', 'set', 'delete', 'search']).describe('Operation to perform'),
+    projectPath: z.string().optional().describe('Absolute path to the project directory (required for get/list/set)'),
+    noteId: z.string().optional().describe('Note ID (for get or delete by ID)'),
+    title: z.string().optional().describe('Note title (for get by title, or set)'),
+    content: z.string().optional().describe('Note content (required for set)'),
+    tags: z.array(z.string()).optional().describe('Tags to attach to the note (for set)'),
+    query: z.string().optional().describe('Search query (required for search)'),
+  },
+  async ({ action, projectPath, noteId, title, content, tags, query }) => {
+    if (action === 'list') {
+      if (!projectPath) {
+        return { content: [{ type: 'text', text: 'projectPath is required for list' }], isError: true };
+      }
+      const result = withService((svc) => {
+        const project = svc.getProjectByPath(projectPath);
+        if (!project) {
+          return { error: `No Nexus project registered at "${projectPath}". Run \`nexus project add ${projectPath}\` first.` };
+        }
+        return { notes: svc.getNotesForProject(project.id), projectName: project.name };
+      });
+
+      if ('error' in result) {
+        return { content: [{ type: 'text', text: result.error }], isError: true };
+      }
+
+      if (result.notes.length === 0) {
+        return { content: [{ type: 'text', text: `No notes found for project **${result.projectName}**.` }] };
+      }
+
+      const lines = [`## Notes for **${result.projectName}** (${result.notes.length})\n`];
+      for (const n of result.notes) {
+        lines.push(`### ${n.title}`);
+        lines.push(n.content.slice(0, 200) + (n.content.length > 200 ? '…' : ''));
+        if (n.tags.length > 0) lines.push(`*Tags: ${n.tags.join(', ')}*`);
+        lines.push(`*ID: ${n.id} | Updated: ${new Date(n.updatedAt).toLocaleDateString()}*`);
+        lines.push('');
+      }
+
+      return { content: [{ type: 'text', text: lines.join('\n') }] };
+    }
+
+    if (action === 'get') {
+      const result = withService((svc) => {
+        if (noteId) {
+          const note = svc.getNoteById(noteId);
+          if (!note) return { error: `No note found with ID "${noteId}"` };
+          return { note };
+        }
+        if (title && projectPath) {
+          const project = svc.getProjectByPath(projectPath);
+          if (!project) return { error: `No project registered at "${projectPath}"` };
+          const note = svc.getNoteByTitle(project.id, title);
+          if (!note) return { error: `No note titled "${title}" found in project` };
+          return { note };
+        }
+        return { error: 'Provide either noteId, or both title and projectPath' };
+      });
+
+      if ('error' in result) {
+        return { content: [{ type: 'text', text: result.error }], isError: true };
+      }
+
+      const n = result.note;
+      const lines = [
+        `## ${n.title}`,
+        '',
+        n.content,
+        '',
+        n.tags.length > 0 ? `*Tags: ${n.tags.join(', ')}*` : null,
+        `*ID: ${n.id} | Updated: ${new Date(n.updatedAt).toLocaleDateString()}*`,
+      ].filter(Boolean) as string[];
+
+      return { content: [{ type: 'text', text: lines.join('\n') }] };
+    }
+
+    if (action === 'set') {
+      if (!projectPath) {
+        return { content: [{ type: 'text', text: 'projectPath is required for set' }], isError: true };
+      }
+      if (!title) {
+        return { content: [{ type: 'text', text: 'title is required for set' }], isError: true };
+      }
+      if (content === undefined) {
+        return { content: [{ type: 'text', text: 'content is required for set' }], isError: true };
+      }
+
+      const result = withService((svc) => {
+        const project = svc.getProjectByPath(projectPath);
+        if (!project) {
+          return { error: `No Nexus project registered at "${projectPath}". Run \`nexus project add ${projectPath}\` first.` };
+        }
+        const note = svc.upsertNote({ projectId: project.id, title, content, ...(tags ? { tags } : {}) }, 'mcp');
+        return { note, projectName: project.name };
+      });
+
+      if ('error' in result) {
+        return { content: [{ type: 'text', text: result.error }], isError: true };
+      }
+
+      return {
+        content: [
+          {
+            type: 'text',
+            text: [
+              `✓ Note saved for project **${result.projectName}**:`,
+              ``,
+              `- **Title:** ${result.note.title}`,
+              `- **ID:** ${result.note.id}`,
+              result.note.tags.length > 0 ? `- **Tags:** ${result.note.tags.join(', ')}` : null,
+              ``,
+              `Run \`nexus sync\` to push this note into the project's CLAUDE.md.`,
+            ]
+              .filter(Boolean)
+              .join('\n'),
+          },
+        ],
+      };
+    }
+
+    if (action === 'delete') {
+      if (!noteId) {
+        return { content: [{ type: 'text', text: 'noteId is required for delete' }], isError: true };
+      }
+
+      const deleted = withService((svc) => svc.deleteNote(noteId, 'mcp'));
+      if (!deleted) {
+        return { content: [{ type: 'text', text: `No note found with ID "${noteId}"` }], isError: true };
+      }
+
+      return { content: [{ type: 'text', text: `✓ Note deleted: ${noteId}` }] };
+    }
+
+    if (action === 'search') {
+      if (!query) {
+        return { content: [{ type: 'text', text: 'query is required for search' }], isError: true };
+      }
+
+      const result = withService((svc) => {
+        let projectId: string | undefined;
+        if (projectPath) {
+          const project = svc.getProjectByPath(projectPath);
+          if (!project) return { error: `No project registered at "${projectPath}"` };
+          projectId = project.id;
+        }
+        return { notes: svc.searchNotes(query, projectId) };
+      });
+
+      if ('error' in result) {
+        return { content: [{ type: 'text', text: result.error }], isError: true };
+      }
+
+      if (result.notes.length === 0) {
+        return { content: [{ type: 'text', text: `No notes found matching "${query}".` }] };
+      }
+
+      const lines = [`## Notes matching "${query}" (${result.notes.length})\n`];
+      for (const n of result.notes) {
+        lines.push(`### ${n.title}`);
+        lines.push(n.content.slice(0, 300) + (n.content.length > 300 ? '…' : ''));
+        if (n.tags.length > 0) lines.push(`*Tags: ${n.tags.join(', ')}*`);
+        lines.push(`*ID: ${n.id}*`);
+        lines.push('');
+      }
+
+      return { content: [{ type: 'text', text: lines.join('\n') }] };
+    }
+
+    return { content: [{ type: 'text', text: 'Unknown action' }], isError: true };
+  },
+);
+
 // ─── Start ────────────────────────────────────────────────────────────────────
 
 async function main() {

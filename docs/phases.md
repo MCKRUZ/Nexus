@@ -61,9 +61,28 @@ Track current phase here. Update when transitioning.
 - [x] Proxy `/api` → `localhost:47340` in Vite dev server
 
 ## Phase 6: Polish & Release (Week 8)
-**Status: NOT STARTED**
+**Status: IN PROGRESS**
 
+### Generic Usability
+- [x] Fix machine-specific references in JSDoc (`bablyon` → generic proxy example)
+- [x] Add `docs/templates/nexus-memory.md` — installable cross-project memory rule
+- [x] Add `nexus install-memory-rule` CLI command
+- [x] Post-`nexus init` suggestion to run `nexus install-memory-rule`
+- [x] Port collision detection: clear EADDRINUSE message + `--port` hint
+- [x] `bindAddress` option on server (default `127.0.0.1`, toggleable to `0.0.0.0`)
+- [x] Fix CLAUDE.md Tauri phase reference (Phase 5 = Hono/React, Phase 6 = Tauri)
+- [x] `docs/GETTING_STARTED.md` — 5-minute onboarding walkthrough
+
+### Tauri Desktop App
+- [x] `packages/dashboard/src-tauri/` — Rust/Tauri v2 shell
+- [x] System tray (Open Nexus / Quit)
+- [x] Spawn Hono server as sidecar on startup
+- [x] `tauri:dev` + `tauri:build` scripts in dashboard + root workspace
+- [x] Vite config updated for Tauri build targets
+- [x] Settings page (launch-at-login, theme, server mode, Claude root)
+
+### Open Source Release
 - [ ] Windows MSI installer (Tauri bundler)
-- [ ] First-run wizard
-- [ ] Documentation
-- [ ] Open source release
+- [ ] macOS DMG (Tauri bundler)
+- [ ] Linux .deb + .AppImage (Tauri bundler)
+- [ ] README overhaul with install badges

@@ -45,13 +45,13 @@ export function syncCommand(): Command {
 
           // Find related projects (children of this project or same parent)
           const allProjects = svc.listProjects();
-          const relatedProjects = allProjects
-            .filter(
-              (p) =>
-                p.id !== project.id &&
-                (p.parentId === project.id || project.parentId === p.id),
-            )
+          const otherProjects = allProjects.filter((p) => p.id !== project.id);
+          const relatedProjects = otherProjects
+            .filter((p) => p.parentId === project.id || project.parentId === p.id)
             .map((p) => ({ name: p.name, path: p.path }));
+          const relatedProjectNotes = otherProjects
+            .map((p) => ({ projectName: p.name, notes: svc.getNotesForProject(p.id) }))
+            .filter((rpn) => rpn.notes.length > 0);
 
           if (opts.dryRun) {
             log.info(`Would sync ${project.name}:`);
@@ -60,8 +60,11 @@ export function syncCommand(): Command {
             continue;
           }
 
+          const notes = svc.getNotesForProject(project.id);
           const result = syncClaudeMd({
             projectPath: project.path,
+            notes,
+            relatedProjectNotes,
             decisions,
             patterns,
             preferences,

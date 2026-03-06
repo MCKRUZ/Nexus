@@ -14,13 +14,16 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
-import type { Decision, Pattern, Preference, Conflict } from '../types/index.js';
+import type { Decision, Pattern, Preference, Conflict, Note } from '../types/index.js';
 
 const SECTION_START = '<!-- nexus:start -->';
 const SECTION_END = '<!-- nexus:end -->';
 
 export interface SyncInput {
   projectPath: string;
+  notes: Note[];
+  /** Notes inherited from parent/child/sibling projects — shared cross-project context */
+  relatedProjectNotes?: Array<{ projectName: string; notes: Note[] }>;
   decisions: Decision[];
   patterns: Pattern[];
   preferences: Preference[];
@@ -47,6 +50,35 @@ function generateSection(input: SyncInput): string {
     `*Last sync: ${new Date().toISOString().split('T')[0]}*`,
     '',
   ];
+
+  // Project context notes — full content, sorted by most recently updated
+  const sortedNotes = [...input.notes].sort((a, b) => b.updatedAt - a.updatedAt);
+  if (sortedNotes.length > 0) {
+    lines.push('### Project Context');
+    for (const note of sortedNotes) {
+      lines.push(`#### ${note.title}`);
+      lines.push(note.content);
+      if (note.tags.length > 0) {
+        lines.push(`*Tags: ${note.tags.join(', ')}*`);
+      }
+      lines.push('');
+    }
+  }
+
+  // Notes inherited from related projects (parent/child) — cross-project context
+  const relatedWithNotes = (input.relatedProjectNotes ?? []).filter((rpn) => rpn.notes.length > 0);
+  for (const rpn of relatedWithNotes) {
+    const sorted = [...rpn.notes].sort((a, b) => b.updatedAt - a.updatedAt);
+    lines.push(`### Context from ${rpn.projectName}`);
+    for (const note of sorted) {
+      lines.push(`#### ${note.title}`);
+      lines.push(note.content);
+      if (note.tags.length > 0) {
+        lines.push(`*Tags: ${note.tags.join(', ')}*`);
+      }
+      lines.push('');
+    }
+  }
 
   // Key decisions (top 10, high-confidence kinds first)
   const priorityOrder: Decision['kind'][] = ['security', 'architecture', 'library', 'pattern', 'naming', 'other'];

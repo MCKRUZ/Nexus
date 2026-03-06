@@ -1,5 +1,5 @@
 import { useEffect, useState, useMemo } from 'react';
-import { api, type Project, type Decision, type Pattern } from '../api.js';
+import { api, type Project, type Decision, type Pattern, type Note } from '../api.js';
 
 const DECISION_KINDS = ['architecture', 'library', 'pattern', 'naming', 'security', 'other'] as const;
 
@@ -14,10 +14,18 @@ type RecencyOption = typeof RECENCY_OPTIONS[number];
 
 export function Projects() {
   const [projects, setProjects] = useState<Project[]>([]);
-  const [counts, setCounts] = useState<Record<string, { decisions: number; patterns: number }>>({});
+  const [counts, setCounts] = useState<Record<string, { decisions: number; patterns: number; notes: number }>>({});
   const [selected, setSelected] = useState<Project | null>(null);
   const [decisions, setDecisions] = useState<Decision[]>([]);
   const [patterns, setPatterns] = useState<Pattern[]>([]);
+  const [notes, setNotes] = useState<Note[]>([]);
+  const [detailLoading, setDetailLoading] = useState(false);
+  const [notesExpanded, setNotesExpanded] = useState(true);
+  const [noteQuickTitle, setNoteQuickTitle] = useState('');
+  const [noteQuickContent, setNoteQuickContent] = useState('');
+  const [noteQuickOpen, setNoteQuickOpen] = useState(false);
+  const [noteQuickSaving, setNoteQuickSaving] = useState(false);
+  const [expandedNoteId, setExpandedNoteId] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
 
@@ -37,8 +45,8 @@ export function Projects() {
     Promise.all([api.projects.list(), api.projects.counts()])
       .then(([ps, cs]) => {
         setProjects(ps);
-        const map: Record<string, { decisions: number; patterns: number }> = {};
-        for (const c of cs) map[c.id] = { decisions: c.decisions, patterns: c.patterns };
+        const map: Record<string, { decisions: number; patterns: number; notes: number }> = {};
+        for (const c of cs) map[c.id] = { decisions: c.decisions, patterns: c.patterns, notes: c.notes ?? 0 };
         setCounts(map);
         if (ps[0]) setSelected(ps[0]);
       })
@@ -46,17 +54,34 @@ export function Projects() {
       .finally(() => setLoading(false));
   }, []);
 
+  const selectedId = selected?.id ?? null;
+
   useEffect(() => {
-    if (!selected) return;
+    if (!selectedId) return;
     setDecisionSearch('');
     setKindFilter(null);
     setPatternSearch('');
-    Promise.all([
-      api.projects.decisions(selected.id),
-      api.projects.patterns(selected.id),
-    ]).then(([ds, ps]) => { setDecisions(ds); setPatterns(ps); })
-      .catch(() => {/* non-fatal */});
-  }, [selected]);
+    setNoteQuickOpen(false);
+    setExpandedNoteId(null);
+    setDecisions([]);
+    setPatterns([]);
+    setNotes([]);
+    setDetailLoading(true);
+
+    const id = selectedId;
+    Promise.allSettled([
+      api.projects.decisions(id),
+      api.projects.patterns(id),
+      api.projects.notes(id),
+    ]).then(([decisionsRes, patternsRes, notesRes]) => {
+      if (decisionsRes.status === 'fulfilled') setDecisions(decisionsRes.value);
+      if (patternsRes.status === 'fulfilled') setPatterns(patternsRes.value);
+      if (notesRes.status === 'fulfilled') setNotes(notesRes.value);
+      if (decisionsRes.status === 'rejected') console.error('decisions fetch failed:', decisionsRes.reason);
+      if (patternsRes.status === 'rejected') console.error('patterns fetch failed:', patternsRes.reason);
+      if (notesRes.status === 'rejected') console.error('notes fetch failed:', notesRes.reason);
+    }).finally(() => setDetailLoading(false));
+  }, [selectedId]);
 
   // Collect all unique tags across all projects
   const allTags = useMemo(() => {
@@ -225,10 +250,11 @@ export function Projects() {
                     {p.path}
                   </div>
                   {/* Counts row */}
-                  {c && (c.decisions > 0 || c.patterns > 0) && (
+                  {c && (c.decisions > 0 || c.patterns > 0 || c.notes > 0) && (
                     <div style={{ marginTop: 5, display: 'flex', gap: 4 }}>
                       {c.decisions > 0 && <span className="badge badge-blue">{c.decisions} decisions</span>}
                       {c.patterns > 0 && <span className="badge badge-green">{c.patterns} patterns</span>}
+                      {c.notes > 0 && <span className="badge badge-purple">{c.notes} notes</span>}
                     </div>
                   )}
                   {p.tags.length > 0 && (
@@ -255,6 +281,7 @@ export function Projects() {
               <div style={{ textAlign: 'right', fontSize: 12, color: 'var(--text2)' }}>
                 <div>Registered {new Date(selected.registeredAt).toLocaleDateString()}</div>
                 {selected.lastSeenAt && <div>Last seen {new Date(selected.lastSeenAt).toLocaleDateString()}</div>}
+                {detailLoading && <div style={{ color: 'var(--accent)', marginTop: 4 }}>Loading…</div>}
               </div>
             </div>
           </div>
@@ -369,6 +396,154 @@ export function Projects() {
                     </table>
                   </div>
                 )}
+          </section>
+
+          <section>
+            <div className="section-header">
+              <button
+                onClick={() => setNotesExpanded((v) => !v)}
+                style={{ background: 'none', border: 'none', cursor: 'pointer', padding: 0, display: 'flex', alignItems: 'center', gap: 6 }}
+              >
+                <span style={{ fontSize: 12, color: 'var(--text2)' }}>{notesExpanded ? '▾' : '▸'}</span>
+                <span className="section-title">Notes ({notes.length})</span>
+              </button>
+              <button
+                onClick={() => setNoteQuickOpen((v) => !v)}
+                style={{
+                  marginLeft: 'auto',
+                  background: 'var(--accent)',
+                  color: '#fff',
+                  border: 'none',
+                  borderRadius: 5,
+                  padding: '3px 10px',
+                  cursor: 'pointer',
+                  fontSize: 12,
+                }}
+              >
+                + Add note
+              </button>
+            </div>
+
+            {noteQuickOpen && (
+              <div className="card" style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                <input
+                  className="filter-input"
+                  placeholder="Note title…"
+                  value={noteQuickTitle}
+                  onChange={(e) => setNoteQuickTitle(e.target.value)}
+                />
+                <textarea
+                  value={noteQuickContent}
+                  onChange={(e) => setNoteQuickContent(e.target.value)}
+                  placeholder="Note content…"
+                  style={{
+                    background: 'var(--bg2)',
+                    border: '1px solid var(--border)',
+                    borderRadius: 6,
+                    color: 'var(--text)',
+                    padding: '6px 10px',
+                    fontSize: 13,
+                    fontFamily: 'var(--mono)',
+                    minHeight: 100,
+                    resize: 'vertical',
+                  }}
+                />
+                <div style={{ display: 'flex', gap: 6 }}>
+                  <button
+                    disabled={noteQuickSaving}
+                    onClick={async () => {
+                      if (!selected || !noteQuickTitle.trim() || !noteQuickContent.trim()) return;
+                      setNoteQuickSaving(true);
+                      try {
+                        const saved = await api.notes.upsert({
+                          projectId: selected.id,
+                          title: noteQuickTitle.trim(),
+                          content: noteQuickContent,
+                        });
+                        setNotes((prev) => {
+                          const idx = prev.findIndex((n) => n.id === saved.id);
+                          return idx >= 0
+                            ? prev.map((n) => (n.id === saved.id ? saved : n))
+                            : [saved, ...prev];
+                        });
+                        setNoteQuickTitle('');
+                        setNoteQuickContent('');
+                        setNoteQuickOpen(false);
+                      } catch { /* non-fatal */ }
+                      finally { setNoteQuickSaving(false); }
+                    }}
+                    style={{
+                      background: 'var(--accent)',
+                      color: '#fff',
+                      border: 'none',
+                      borderRadius: 5,
+                      padding: '5px 12px',
+                      cursor: noteQuickSaving ? 'not-allowed' : 'pointer',
+                      fontSize: 12,
+                      opacity: noteQuickSaving ? 0.7 : 1,
+                    }}
+                  >
+                    {noteQuickSaving ? 'Saving…' : 'Save'}
+                  </button>
+                  <button
+                    onClick={() => setNoteQuickOpen(false)}
+                    style={{
+                      background: 'var(--bg3)',
+                      color: 'var(--text)',
+                      border: '1px solid var(--border)',
+                      borderRadius: 5,
+                      padding: '5px 12px',
+                      cursor: 'pointer',
+                      fontSize: 12,
+                    }}
+                  >
+                    Cancel
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {notesExpanded && (
+              notes.length === 0
+                ? <div className="empty">No notes for this project</div>
+                : <div className="stacked" style={{ gap: 6 }}>
+                    {notes.map((n) => (
+                      <div
+                        key={n.id}
+                        className="card"
+                        style={{ cursor: 'pointer', padding: '10px 14px' }}
+                        onClick={() => setExpandedNoteId(expandedNoteId === n.id ? null : n.id)}
+                      >
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                          <span style={{ fontWeight: 600, fontSize: 13 }}>{n.title}</span>
+                          <span style={{ fontSize: 11, color: 'var(--text2)' }}>
+                            {expandedNoteId === n.id ? '▲' : '▼'}
+                          </span>
+                        </div>
+                        {n.tags.length > 0 && (
+                          <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap', marginTop: 4 }}>
+                            {n.tags.map((t) => (
+                              <span key={t} className="badge badge-gray">{t}</span>
+                            ))}
+                          </div>
+                        )}
+                        {expandedNoteId !== n.id && (
+                          <div style={{ fontSize: 12, color: 'var(--text2)', marginTop: 4, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                            {n.content.slice(0, 120)}
+                          </div>
+                        )}
+                        {expandedNoteId === n.id && (
+                          <pre style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word', fontFamily: 'var(--mono)', fontSize: 12, marginTop: 8, color: 'var(--text)', lineHeight: 1.5 }}>
+                            {n.content}
+                          </pre>
+                        )}
+                        <div style={{ fontSize: 11, color: 'var(--text2)', marginTop: 4 }}>
+                          Updated {new Date(n.updatedAt).toLocaleDateString()}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+            )}
           </section>
         </div>
       )}

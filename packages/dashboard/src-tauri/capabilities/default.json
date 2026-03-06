@@ -1,0 +1,16 @@
+{
+  "$schema": "https://schema.tauri.app/security/2",
+  "identifier": "default",
+  "description": "Default permissions for Nexus desktop app",
+  "windows": ["main"],
+  "permissions": [
+    "core:default",
+    "shell:allow-spawn",
+    "shell:allow-kill",
+    "autostart:allow-enable",
+    "autostart:allow-disable",
+    "autostart:allow-is-enabled",
+    "process:allow-exit",
+    "process:allow-restart"
+  ]
+}

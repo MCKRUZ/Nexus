@@ -36,6 +36,7 @@ describe('migrateDatabase', () => {
     expect(tableNames).toContain('conflicts');
     expect(tableNames).toContain('preferences');
     expect(tableNames).toContain('audit_log');
+    expect(tableNames).toContain('notes');
     expect(tableNames).toContain('schema_version');
   });
 
@@ -46,7 +47,7 @@ describe('migrateDatabase', () => {
       .prepare('SELECT MAX(version) as v FROM schema_version')
       .get() as { v: number };
 
-    expect(version.v).toBe(1);
+    expect(version.v).toBe(2);
   });
 
   it('is idempotent — running twice does not throw', () => {

@@ -4,8 +4,8 @@ import os from 'node:os';
 import { Hono } from 'hono';
 import { cors } from 'hono/cors';
 import { serveStatic } from '@hono/node-server/serve-static';
-import { NexusService, isInitialized, listSessions, getSessionDetail, getNativeStats } from '@nexus/core';
-import type { DecisionKind } from '@nexus/core';
+import { NexusService, isInitialized, listSessions, getSessionDetail, getNativeStats, syncClaudeMd } from '@nexus/core';
+import type { DecisionKind, UpsertNoteParams, Conflict } from '@nexus/core';
 
 const app = new Hono();
 
@@ -13,7 +13,7 @@ const app = new Hono();
 app.use(
   '*',
   cors({
-    origin: ['http://localhost:5173', 'http://localhost:4173'],
+    origin: ['http://localhost:5173', 'http://localhost:4173', 'http://tauri.localhost'],
     allowMethods: ['GET', 'POST', 'DELETE', 'OPTIONS'],
     allowHeaders: ['Content-Type'],
   }),
@@ -49,6 +49,7 @@ app.get('/api/projects/counts', (c) => {
     id: p.id,
     decisions: withSvc((svc) => svc.getDecisionsForProject(p.id)).length,
     patterns: withSvc((svc) => svc.getPatternsForProject(p.id)).length,
+    notes: withSvc((svc) => svc.getNotesForProject(p.id)).length,
   }));
   return c.json(counts);
 });
@@ -78,11 +79,40 @@ app.get('/api/projects/:id/preferences', (c) => {
   return c.json(preferences);
 });
 
+app.get('/api/projects/:id/notes', (c) => {
+  const id = c.req.param('id');
+  const notes = withSvc((svc) => svc.getNotesForProject(id));
+  return c.json(notes);
+});
+
 app.get('/api/projects/:id/dependencies', (c) => {
   const id = c.req.param('id');
   const depth = parseInt(c.req.query('depth') ?? '2', 10);
   const edges = withSvc((svc) => svc.getDependencyGraph(id, depth));
   return c.json(edges);
+});
+
+// ─── Notes ────────────────────────────────────────────────────────────────────
+
+app.get('/api/notes/search', (c) => {
+  const q = c.req.query('q');
+  if (!q) return c.json({ error: 'q parameter required' }, 400);
+  const projectId = c.req.query('projectId');
+  const notes = withSvc((svc) => svc.searchNotes(q, projectId));
+  return c.json(notes);
+});
+
+app.post('/api/notes', async (c) => {
+  const body = await c.req.json<UpsertNoteParams>();
+  const note = withSvc((svc) => svc.upsertNote(body, 'daemon'));
+  return c.json(note, 201);
+});
+
+app.delete('/api/notes/:id', (c) => {
+  const id = c.req.param('id');
+  const deleted = withSvc((svc) => svc.deleteNote(id, 'daemon'));
+  if (!deleted) return c.json({ error: 'Not found' }, 404);
+  return c.json({ deleted: true });
 });
 
 // ─── Decisions ────────────────────────────────────────────────────────────────
@@ -192,17 +222,74 @@ app.get('/api/stats', (c) => {
     const projects = svc.listProjects();
     let totalDecisions = 0;
     let totalPatterns = 0;
+    let totalNotes = 0;
     for (const p of projects) {
       totalDecisions += svc.getDecisionsForProject(p.id).length;
       totalPatterns += svc.getPatternsForProject(p.id).length;
+      totalNotes += svc.getNotesForProject(p.id).length;
     }
     return {
       projects: projects.length,
       decisions: totalDecisions,
       patterns: totalPatterns,
+      notes: totalNotes,
     };
   });
   return c.json(stats);
+});
+
+// ─── Sync ─────────────────────────────────────────────────────────────────────
+
+app.post('/api/sync', (c) => {
+  const results = withSvc((svc) => {
+    const allProjects = svc.listProjects();
+
+    return allProjects.map((project) => {
+      const decisions = svc.getDecisionsForProject(project.id);
+      const patterns = svc.getPatternsForProject(project.id);
+      const preferences = svc.listPreferences(project.id);
+      const notes = svc.getNotesForProject(project.id);
+      const { conflicts } = svc.checkConflicts([project.id]);
+      const otherProjects = allProjects.filter((p) => p.id !== project.id);
+      const relatedProjects = otherProjects
+        .filter((p) => p.parentId === project.id || project.parentId === p.id)
+        .map((p) => ({ name: p.name, path: p.path }));
+      const relatedProjectNotes = otherProjects
+        .map((p) => ({ projectName: p.name, notes: svc.getNotesForProject(p.id) }))
+        .filter((rpn) => rpn.notes.length > 0);
+
+      try {
+        const result = syncClaudeMd({
+          projectPath: project.path,
+          notes,
+          relatedProjectNotes,
+          decisions,
+          patterns,
+          preferences,
+          conflicts: conflicts as Conflict[],
+          relatedProjects,
+        });
+        return {
+          projectId: project.id,
+          projectName: project.name,
+          updated: result.updated,
+          claudeMdPath: result.claudeMdPath,
+          error: null,
+        };
+      } catch (err: unknown) {
+        return {
+          projectId: project.id,
+          projectName: project.name,
+          updated: false,
+          claudeMdPath: null,
+          error: err instanceof Error ? err.message : 'Unknown error',
+        };
+      }
+    });
+  });
+
+  const updatedCount = results.filter((r) => r.updated).length;
+  return c.json({ results, updatedCount });
 });
 
 // ─── Activity ─────────────────────────────────────────────────────────────────

@@ -80,6 +80,21 @@ export const PreferenceSchema = z.object({
 
 export type Preference = z.infer<typeof PreferenceSchema>;
 
+// ─── Note ─────────────────────────────────────────────────────────────────────
+
+export const NoteSchema = z.object({
+  id: z.string().uuid(),
+  projectId: z.string().uuid(),
+  title: z.string().max(500),
+  content: z.string().max(50000),
+  tags: z.array(z.string()).default([]),
+  createdAt: z.number(),
+  updatedAt: z.number(),
+  source: z.string(),
+});
+
+export type Note = z.infer<typeof NoteSchema>;
+
 // ─── Audit Log ────────────────────────────────────────────────────────────────
 
 export const AuditEntrySchema = z.object({

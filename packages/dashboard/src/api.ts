@@ -1,6 +1,9 @@
 /** Typed API client for the Nexus server at localhost:47340 */
 
-const BASE = '/api';
+// In Tauri, the app is loaded via tauri:// protocol, so relative URLs won't
+// reach the sidecar server. Use the absolute localhost URL when running as desktop.
+const isTauri = '__TAURI_INTERNALS__' in window;
+const BASE = isTauri ? 'http://localhost:47340/api' : '/api';
 
 export interface Project {
   id: string;
@@ -51,10 +54,22 @@ export interface Conflict {
   resolution?: string;
 }
 
+export interface Note {
+  id: string;
+  projectId: string;
+  title: string;
+  content: string;
+  tags: string[];
+  createdAt: number;
+  updatedAt: number;
+  source: string;
+}
+
 export interface Stats {
   projects: number;
   decisions: number;
   patterns: number;
+  notes: number;
 }
 
 export interface QueryResult {
@@ -198,8 +213,28 @@ export interface ActivityEvent {
 
 async function get<T>(path: string): Promise<T> {
   const res = await fetch(BASE + path);
-  if (!res.ok) throw new Error(`GET ${path} → ${res.status}`);
+  if (!res.ok) {
+    let msg = `GET ${path} → ${res.status}`;
+    try {
+      const body = await res.json() as { error?: string };
+      if (body.error) msg = body.error;
+    } catch { /* ignore */ }
+    throw new Error(msg);
+  }
   return res.json() as Promise<T>;
+}
+
+export interface SyncResult {
+  projectId: string;
+  projectName: string;
+  updated: boolean;
+  claudeMdPath: string | null;
+  error: string | null;
+}
+
+export interface SyncAllResult {
+  results: SyncResult[];
+  updatedCount: number;
 }
 
 async function post<T>(path: string, body: unknown): Promise<T> {
@@ -214,13 +249,15 @@ async function post<T>(path: string, body: unknown): Promise<T> {
 
 export const api = {
   stats: () => get<Stats>('/stats'),
+  syncAll: () => post<SyncAllResult>('/sync', {}),
   projects: {
     list: () => get<Project[]>('/projects'),
     get: (id: string) => get<Project>(`/projects/${id}`),
-    counts: () => get<Array<{ id: string; decisions: number; patterns: number }>>('/projects/counts'),
+    counts: () => get<Array<{ id: string; decisions: number; patterns: number; notes: number }>>('/projects/counts'),
     decisions: (id: string) => get<Decision[]>(`/projects/${id}/decisions`),
     patterns: (id: string) => get<Pattern[]>(`/projects/${id}/patterns`),
     preferences: (id: string) => get<Preference[]>(`/projects/${id}/preferences`),
+    notes: (id: string) => get<Note[]>(`/projects/${id}/notes`),
     dependencies: (id: string, depth = 2) =>
       get<Array<{ from: string; to: string }>>(`/projects/${id}/dependencies?depth=${depth}`),
   },
@@ -231,6 +268,21 @@ export const api = {
       summary: string;
       rationale?: string;
     }) => post<Decision>('/decisions', d),
+  },
+  notes: {
+    listForProject: (projectId: string) => get<Note[]>(`/projects/${projectId}/notes`),
+    search: (query: string, projectId?: string) =>
+      get<Note[]>(
+        `/notes/search?q=${encodeURIComponent(query)}` +
+          (projectId ? `&projectId=${projectId}` : ''),
+      ),
+    upsert: (d: { projectId: string; title: string; content: string; tags?: string[] }) =>
+      post<Note>('/notes', d),
+    delete: (id: string) =>
+      fetch(`${BASE}/notes/${id}`, { method: 'DELETE' }).then((r) => {
+        if (!r.ok) throw new Error(`DELETE /notes/${id} → ${r.status}`);
+        return r.json() as Promise<{ deleted: boolean }>;
+      }),
   },
   preferences: {
     list: (projectId?: string) =>

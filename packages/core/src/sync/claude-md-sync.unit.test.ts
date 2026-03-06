@@ -9,6 +9,8 @@ function makeTempDir(): string {
 }
 
 const EMPTY_INPUT = {
+  notes: [],
+  relatedProjectNotes: [],
   decisions: [],
   patterns: [],
   preferences: [],
@@ -81,6 +83,35 @@ describe('syncClaudeMd', () => {
     expect(content).toContain('# My Project');
     expect(content).toContain('Some important docs.');
     expect(content).toContain('<!-- nexus:start -->');
+  });
+
+  it('renders notes from related projects under their own heading', () => {
+    const result = syncClaudeMd({
+      ...EMPTY_INPUT,
+      projectPath: tmpDir,
+      relatedProjectNotes: [
+        {
+          projectName: 'Sage',
+          notes: [
+            {
+              id: 'n1',
+              projectId: 'sage-id',
+              title: 'Sage Overview',
+              content: 'Sage is a voice AI companion.',
+              tags: ['context'],
+              createdAt: Date.now(),
+              updatedAt: Date.now(),
+              source: 'mcp',
+            },
+          ],
+        },
+      ],
+    });
+
+    const content = fs.readFileSync(result.claudeMdPath, 'utf8');
+    expect(content).toContain('### Context from Sage');
+    expect(content).toContain('#### Sage Overview');
+    expect(content).toContain('Sage is a voice AI companion.');
   });
 
   it('updates existing nexus section when decisions change', () => {
