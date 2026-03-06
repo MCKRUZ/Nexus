@@ -2,7 +2,7 @@
 
 > The missing layer between your projects and your AI.
 
-Nexus is a **secure, local-first intelligence layer** that observes, learns, and coordinates across all Claude Code sessions. It builds a cross-project knowledge graph — tracking architectural decisions, code patterns, preferences, and conflicts — and syncs that context back into your `CLAUDE.md` files automatically.
+Nexus is a **secure, local-first intelligence layer** that observes, learns, and coordinates across all Claude Code sessions. It builds a cross-project knowledge graph — tracking architectural decisions, code patterns, preferences, and notes — and syncs that context back into your `CLAUDE.md` files automatically.
 
 Everything stays on your machine. No cloud. No telemetry.
 
@@ -12,10 +12,12 @@ Everything stays on your machine. No cloud. No telemetry.
 
 - **Decision tracking** — Record architecture, library, pattern, naming, and security decisions per project
 - **Pattern extraction** — LLM-powered extraction of recurring code patterns from Claude Code sessions
+- **Notes** — Freeform context blocks per project, synced into `CLAUDE.md` and surfaced to every future session
 - **Conflict detection** — Detect when projects make contradictory decisions (e.g., two projects using conflicting auth approaches)
 - **CLAUDE.md sync** — Automatically writes learned context back into each project's `CLAUDE.md`
 - **MCP server** — Expose Nexus tools directly to Claude Code via the Model Context Protocol
-- **Dashboard** — React/Vite web UI with observability, project graph, and activity feed
+- **Desktop app** — Native Tauri v2 desktop application; single `.exe`, system tray, no separate server required
+- **Web dashboard** — React/Vite UI with observability, project graph, and activity feed (also runs standalone)
 - **Native session viewer** — Browse all Claude Code sessions from `~/.claude/projects/` with inline event timelines, tool call inspection, and aggregate stats — no configuration required
 - **Langfuse overlay** — Optional: add Langfuse credentials to unlock LLM cost/token charts, trace trees, and session groupings
 
@@ -33,6 +35,7 @@ Everything stays on your machine. No cloud. No telemetry.
 | LLM extraction | `@anthropic-ai/sdk` (claude-haiku-4-5) |
 | HTTP server | Hono |
 | Dashboard | React 18 + Vite |
+| Desktop app | Tauri v2 (Rust + WebView) |
 
 ---
 
@@ -44,7 +47,8 @@ packages/
   cli/        — nexus CLI commands
   mcp/        — MCP server (nexus_* tools exposed to Claude Code)
   server/     — Hono HTTP server at localhost:47340
-  dashboard/  — React/Vite web dashboard
+  dashboard/  — React/Vite web dashboard + Tauri desktop shell
+    src-tauri/  — Rust Tauri backend; spawns server sidecar, manages tray
 ```
 
 **Boundary rules:**
@@ -54,12 +58,26 @@ packages/
 
 ---
 
-## Setup
+## Quick Start — Desktop App
+
+The fastest way to run Nexus is the pre-built desktop app. Download the latest installer from [Releases](../../releases) and run it. The app:
+
+1. Spawns the Nexus HTTP server automatically as a background sidecar
+2. Opens the dashboard in a native window
+3. Hides to the system tray when you close the window (server keeps running)
+4. Quit from the tray menu to exit completely
+
+No Node.js, no separate server process, no terminal required.
+
+---
+
+## Setup (from source)
 
 ### Prerequisites
 
 - Node.js 22+
 - pnpm (`npm install -g pnpm`)
+- Rust + Cargo (only for building the desktop app)
 
 ### Install
 
@@ -84,27 +102,29 @@ This creates `~/.nexus/nexus.db` (SQLCipher-encrypted) and `~/.nexus/config.json
 
 ---
 
-## Running the Server
+## Running
 
-The dashboard requires the Nexus HTTP server at `localhost:47340`.
+### Desktop app (production build)
 
 ```bash
-# Start the server (auto-serves the built dashboard)
+cd packages/dashboard
+pnpm tauri:build
+# Outputs: src-tauri/target/release/nexus-desktop.exe
+#          src-tauri/target/release/bundle/msi/Nexus_*.msi
+#          src-tauri/target/release/bundle/nsis/Nexus_*-setup.exe
+```
+
+### Web server (standalone)
+
+```bash
+# Start the server (auto-serves the built dashboard at localhost:47340)
 node packages/server/dist/index.js
 
-# Or in dev mode (Vite proxy → server)
+# Or in dev mode (Vite on :5173, server on :47340)
 pnpm -r dev
 ```
 
-Then open `http://localhost:5173` (Vite dev) or `http://localhost:47340` (production build).
-
-To build the dashboard for production:
-
-```bash
-pnpm build
-# Dashboard output: packages/dashboard/dist/
-# Server serves it automatically from ./packages/dashboard/dist
-```
+Open `http://localhost:5173` (Vite dev) or `http://localhost:47340` (production).
 
 ---
 
@@ -160,12 +180,14 @@ Available MCP tools:
 
 | Tool | Description |
 |------|-------------|
-| `nexus_query` | Full-text search across decisions, patterns, preferences |
+| `nexus_query` | Full-text search across decisions, patterns, preferences, notes |
 | `nexus_decide` | Record an architectural decision |
-| `nexus_pattern` | Search or record code patterns |
+| `nexus_pattern` | Search code patterns |
+| `nexus_record_pattern` | Record a new code pattern |
 | `nexus_check_conflicts` | Detect cross-project conflicts |
 | `nexus_dependencies` | Query the project dependency graph |
-| `nexus_preferences` | Look up project or global preferences |
+| `nexus_preferences` | Look up or set project/global preferences |
+| `nexus_note` | Get, set, list, delete, or search project notes |
 
 ---
 
@@ -194,13 +216,12 @@ The Observability dashboard works out of the box with **no configuration**. Nexu
 
 ### Langfuse Integration (optional)
 
-If you run a self-hosted [Langfuse](https://langfuse.com) instance, add credentials to unlock LLM cost and token data. The Nexus server proxies Langfuse API calls through `/api/langfuse/*`, which the dashboard uses to display:
+If you run a self-hosted [Langfuse](https://langfuse.com) instance, add credentials to `~/.nexus/config.json` to unlock LLM cost and token data. The Nexus server proxies Langfuse API calls, and the dashboard displays:
 
 - Daily cost and usage metrics
 - Full trace list with latency, cost, scores
 - Session groupings
 - Per-trace observation tree with input/output viewer
-- Scores and metadata
 
 ---
 
@@ -209,12 +230,14 @@ If you run a self-hosted [Langfuse](https://langfuse.com) instance, add credenti
 | Page | Description |
 |------|-------------|
 | **Overview** | Stats cards, recent decisions, active conflicts |
-| **Projects** | Project list + per-project decisions, patterns, graph |
+| **Projects** | Project list + per-project decisions, patterns, notes, graph |
 | **Patterns** | Searchable pattern library with frequency bars |
+| **Notes** | Freeform context per project; synced into CLAUDE.md |
 | **Conflicts** | Open, potential, and resolved cross-project conflicts |
 | **Preferences** | Global and per-project preference editor |
 | **Search** | Full-text search across all knowledge |
-| **Observability** | Native Claude Code sessions (always) + Langfuse traces/cost charts (optional) |
+| **Observability** | Native Claude Code sessions + optional Langfuse traces/cost charts |
+| **Settings** | Server bind mode, autostart on login, port display |
 
 ---
 
@@ -233,7 +256,7 @@ If you run a self-hosted [Langfuse](https://langfuse.com) instance, add credenti
 # Build all packages
 pnpm build
 
-# Run tests (packages/core — 36 tests)
+# Run tests (packages/core)
 cd packages/core && pnpm test
 
 # Lint
@@ -251,6 +274,16 @@ pnpm --filter @nexus/server build
 pnpm --filter @nexus/dashboard build
 ```
 
+### Build the desktop app
+
+```bash
+# Compile server sidecar + Tauri app
+cd packages/dashboard
+pnpm tauri:build
+```
+
+Requires Rust/Cargo. The build runs `pnpm build` (frontend) + `pnpm compile:server` (Node→exe via esbuild + pkg) before invoking Tauri.
+
 ---
 
 ## Phase Status
@@ -258,14 +291,14 @@ pnpm --filter @nexus/dashboard build
 | Phase | Description | Status |
 |-------|-------------|--------|
 | 1 | Foundation — DB, CLI, secret filter | ✅ Complete |
-| 2 | MCP Server — all 6 tools | ✅ Complete |
+| 2 | MCP Server — 8 tools | ✅ Complete |
 | 3 | Hooks & LLM extraction | ✅ Complete |
 | 4 | CLAUDE.md sync engine | ✅ Complete |
-| 5 | HTTP server + React dashboard | ✅ Complete |
-| 6 | Polish & release | 🔲 Not started |
+| 5 | HTTP server + React dashboard + Notes | ✅ Complete |
+| 6 | Tauri desktop app + sidecar server | ✅ Complete |
 
 ---
 
 ## License
 
-Private — not yet open source. Phase 6 includes the open source release.
+Private — not yet open source.
