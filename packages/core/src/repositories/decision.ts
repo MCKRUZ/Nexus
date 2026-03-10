@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import type { NexusDb } from '../db/connection.js';
 import type { Decision, DecisionKind } from '../types/index.js';
 import { auditLog } from './audit.js';
+import { filterSecrets } from '../security/secret-filter.js';
 
 interface DecisionRow {
   id: string;
@@ -71,8 +72,8 @@ export function createDecision(
     id: randomUUID(),
     projectId: params.projectId,
     kind: params.kind,
-    summary: params.summary,
-    rationale: params.rationale,
+    summary: filterSecrets(params.summary).filtered,
+    rationale: params.rationale ? filterSecrets(params.rationale).filtered : undefined,
     sessionId: params.sessionId,
     recordedAt: Date.now(),
   };

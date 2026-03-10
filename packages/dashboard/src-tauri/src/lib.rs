@@ -171,7 +171,8 @@ pub fn run() {
                 })
                 .build(app)?;
 
-            // Open devtools for debugging
+            // Open devtools only in dev builds
+            #[cfg(dev)]
             if let Some(window) = app.get_webview_window("main") {
                 window.open_devtools();
             }

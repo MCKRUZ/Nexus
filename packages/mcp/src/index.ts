@@ -2,7 +2,7 @@
 /**
  * Nexus MCP Server — Phase 2
  *
- * All 6 nexus_* tools are wired to @nexus/core via NexusService.
+ * All 8 nexus_* tools are wired to @nexus/core via NexusService.
  * The server opens/closes the DB per request to avoid holding it open
  * across long idle periods.
  */
@@ -158,22 +158,41 @@ server.tool(
   },
   async ({ query, projectPath }) => {
     const results = withService((svc) => {
+      let project: ReturnType<typeof svc.getProjectByPath> = undefined;
       let projectId: string | undefined;
       if (projectPath) {
-        const project = svc.getProjectByPath(projectPath);
+        project = svc.getProjectByPath(projectPath);
         if (!project) {
           return { error: `No project registered at "${projectPath}"` };
         }
         projectId = project.id;
       }
-      return { patterns: svc.query({ query, ...(projectId ? { projectId } : {}), kinds: ['pattern'], limit: 20 }).patterns };
+
+      const ownPatterns = svc.query({ query, ...(projectId ? { projectId } : {}), kinds: ['pattern'], limit: 20 }).patterns;
+
+      // Cross-project patterns from parent/child projects
+      const crossLines: string[] = [];
+      if (project) {
+        const allProjects = svc.listProjects();
+        const related = allProjects.filter(
+          (p) => p.id !== project!.id && (p.parentId === project!.id || project!.parentId === p.id),
+        );
+        for (const rel of related.slice(0, 3)) {
+          const relPatterns = svc.query({ query, projectId: rel.id, kinds: ['pattern'], limit: 5 }).patterns;
+          for (const p of relPatterns.slice(0, 2)) {
+            crossLines.push(`- **${p.name}** [from: ${rel.name}] (×${p.frequency}): ${p.description}`);
+          }
+        }
+      }
+
+      return { patterns: ownPatterns, crossLines };
     });
 
     if ('error' in results) {
       return { content: [{ type: 'text', text: results.error }], isError: true };
     }
 
-    if (results.patterns.length === 0) {
+    if (results.patterns.length === 0 && results.crossLines.length === 0) {
       return { content: [{ type: 'text', text: `No patterns found matching "${query}".` }] };
     }
 
@@ -183,6 +202,10 @@ server.tool(
       lines.push(p.description);
       if (p.examplePath) lines.push(`*Example:* \`${p.examplePath}\``);
       lines.push('');
+    }
+
+    if (results.crossLines.length > 0) {
+      lines.push(`## From related projects\n${results.crossLines.join('\n')}`);
     }
 
     return { content: [{ type: 'text', text: lines.join('\n') }] };
@@ -535,7 +558,7 @@ server.tool(
               `- **ID:** ${result.note.id}`,
               result.note.tags.length > 0 ? `- **Tags:** ${result.note.tags.join(', ')}` : null,
               ``,
-              `Run \`nexus sync\` to push this note into the project's CLAUDE.md.`,
+              `Note will appear in CLAUDE.md on next session sync (Stop hook runs automatically).`,
             ]
               .filter(Boolean)
               .join('\n'),

@@ -143,6 +143,103 @@ describe('syncClaudeMd', () => {
   });
 });
 
+describe('token budget enforcement', () => {
+  let tmpDir: string;
+
+  beforeEach(() => {
+    tmpDir = makeTempDir();
+  });
+
+  afterEach(() => {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it('truncates decision summaries longer than 80 chars', () => {
+    const longSummary = 'A'.repeat(120);
+    const result = syncClaudeMd({
+      ...EMPTY_INPUT,
+      projectPath: tmpDir,
+      decisions: [
+        { id: 'd1', projectId: 'p1', kind: 'architecture', summary: longSummary, recordedAt: Date.now() },
+      ],
+    });
+
+    const content = fs.readFileSync(result.claudeMdPath, 'utf8');
+    // The full 120-char summary must NOT appear verbatim
+    expect(content).not.toContain(longSummary);
+    // A truncated version ending with ellipsis must appear
+    expect(content).toContain('A'.repeat(79) + '…');
+  });
+
+  it('truncates own note content to 150 chars', () => {
+    const longContent = 'B'.repeat(300);
+    const result = syncClaudeMd({
+      ...EMPTY_INPUT,
+      projectPath: tmpDir,
+      notes: [
+        { id: 'n1', projectId: 'p1', title: 'Big Note', content: longContent, tags: [], createdAt: Date.now(), updatedAt: Date.now(), source: 'mcp' },
+      ],
+    });
+
+    const content = fs.readFileSync(result.claudeMdPath, 'utf8');
+    expect(content).not.toContain(longContent);
+    expect(content).toContain('B'.repeat(149) + '…');
+  });
+
+  it('truncates cross-project note content to 80 chars', () => {
+    const longContent = 'C'.repeat(200);
+    const result = syncClaudeMd({
+      ...EMPTY_INPUT,
+      projectPath: tmpDir,
+      relatedProjectNotes: [
+        {
+          projectName: 'OtherProject',
+          notes: [
+            { id: 'n2', projectId: 'p2', title: 'Cross Note', content: longContent, tags: [], createdAt: Date.now(), updatedAt: Date.now(), source: 'mcp' },
+          ],
+        },
+      ],
+    });
+
+    const content = fs.readFileSync(result.claudeMdPath, 'utf8');
+    expect(content).not.toContain(longContent);
+    expect(content).toContain('C'.repeat(79) + '…');
+  });
+
+  it('keeps total Nexus section under 6000 chars with many decisions and notes', () => {
+    const manyDecisions = Array.from({ length: 20 }, (_, i) => ({
+      id: `d${i}`,
+      projectId: 'p1',
+      kind: 'architecture' as const,
+      summary: `Decision number ${i} — ${'x'.repeat(100)}`,
+      recordedAt: Date.now(),
+    }));
+    const manyNotes = Array.from({ length: 10 }, (_, i) => ({
+      id: `n${i}`,
+      projectId: 'p1',
+      title: `Note ${i}`,
+      content: 'N'.repeat(500),
+      tags: [],
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+      source: 'mcp' as const,
+    }));
+
+    const result = syncClaudeMd({
+      ...EMPTY_INPUT,
+      projectPath: tmpDir,
+      decisions: manyDecisions,
+      notes: manyNotes,
+    });
+
+    const content = fs.readFileSync(result.claudeMdPath, 'utf8');
+    const nexusStart = content.indexOf('<!-- nexus:start -->');
+    const nexusEnd = content.indexOf('<!-- nexus:end -->') + '<!-- nexus:end -->'.length;
+    const sectionLength = nexusEnd - nexusStart;
+    expect(sectionLength).toBeLessThanOrEqual(6000);
+  });
+});
+
 describe('removeNexusSection', () => {
   let tmpDir: string;
 

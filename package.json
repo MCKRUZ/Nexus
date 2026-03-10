@@ -21,7 +21,9 @@
     "typecheck": "pnpm -r typecheck",
     "clean": "pnpm -r clean && rimraf node_modules",
     "tauri:dev": "pnpm --filter @nexus/dashboard tauri:dev",
-    "tauri:build": "pnpm --filter @nexus/dashboard tauri:build"
+    "tauri:build": "pnpm --filter @nexus/dashboard tauri:build",
+    "dev:desktop": "nexus-dev.bat",
+    "build:desktop": "nexus-build.bat"
   },
   "workspaces": [
     "packages/*"

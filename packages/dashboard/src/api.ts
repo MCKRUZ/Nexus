@@ -197,6 +197,39 @@ export interface LangfuseScore {
   dataType: 'NUMERIC' | 'BOOLEAN' | 'CATEGORICAL';
 }
 
+// ─── Analytics types ──────────────────────────────────────────────────────────
+
+export interface SessionAnalytics {
+  totalSessions: number;
+  sessionsWithNexus: number;
+  sessionsWithoutNexus: number;
+  nexusAdoptionRate: number;
+  toolUsageCounts: Record<string, number>;
+  totalNexusToolCalls: number;
+  withNexusAvg: { userTurns: number; toolCalls: number; durationMs: number };
+  withoutNexusAvg: { userTurns: number; toolCalls: number; durationMs: number };
+  dailyAdoption: Array<{ date: string; withNexus: number; withoutNexus: number }>;
+  topNexusSessions: Array<{
+    sessionId: string;
+    cwd: string;
+    nexusToolCalls: number;
+    userTurns: number;
+    toolCalls: number;
+    startedAt: string;
+  }>;
+}
+
+export interface AuditCountByDay {
+  date: string;
+  source: string;
+  count: number;
+}
+
+export interface AuditCountByOperation {
+  operation: string;
+  count: number;
+}
+
 export interface ActivityEvent {
   id: string;
   type: 'decision' | 'pattern';
@@ -209,6 +242,151 @@ export interface ActivityEvent {
   rationale?: string;
   frequency?: number;
   timestamp: number;
+}
+
+// ─── Token analytics types ───────────────────────────────────────────────────
+
+export interface TokenUsageByModel {
+  model: string;
+  inputTokens: number;
+  cacheWriteTokens: number;
+  cacheReadTokens: number;
+  outputTokens: number;
+  estimatedCostUsd: number;
+  requestCount: number;
+}
+
+export interface SessionTokenUsage {
+  sessionId: string;
+  cwd: string;
+  slug?: string;
+  startedAt: string;
+  models: TokenUsageByModel[];
+  totalInputTokens: number;
+  totalOutputTokens: number;
+  totalCacheWriteTokens: number;
+  totalCacheReadTokens: number;
+  totalEstimatedCostUsd: number;
+  requestCount: number;
+  userTurns: number;
+  toolCalls: number;
+}
+
+export interface TokenAnalytics {
+  totalEstimatedCostUsd: number;
+  totalInputTokens: number;
+  totalOutputTokens: number;
+  totalCacheWriteTokens: number;
+  totalCacheReadTokens: number;
+  totalRequests: number;
+  byModel: TokenUsageByModel[];
+  byDay: Array<{
+    date: string;
+    inputTokens: number;
+    outputTokens: number;
+    cacheReadTokens: number;
+    cacheWriteTokens: number;
+    estimatedCostUsd: number;
+    requestCount: number;
+  }>;
+  byProject: Array<{
+    project: string;
+    cwd: string;
+    estimatedCostUsd: number;
+    totalTokens: number;
+    requestCount: number;
+  }>;
+  topSessions: SessionTokenUsage[];
+  cacheSavingsUsd: number;
+  efficiency: EfficiencyMetrics;
+}
+
+export interface ProjectEfficiency {
+  project: string;
+  cwd: string;
+  sessions: number;
+  avgCostPerSession: number;
+  avgCostPerTurn: number;
+  avgTokensPerTurn: number;
+  avgOutputPerInput: number;
+  cacheHitRate: number;
+  avgTurnsPerSession: number;
+  avgToolCallsPerSession: number;
+  totalCost: number;
+}
+
+export interface EfficiencyMetrics {
+  avgCostPerTurn: number;
+  avgTokensPerTurn: number;
+  avgOutputPerInput: number;
+  cacheHitRate: number;
+  avgTurnsPerSession: number;
+  avgToolCallsPerSession: number;
+  avgCostPerSession: number;
+  totalSessions: number;
+  totalUserTurns: number;
+  totalToolCalls: number;
+  byProject: ProjectEfficiency[];
+}
+
+// ─── Context overhead types ──────────────────────────────────────────────────
+
+export interface OverheadItem {
+  category: string;
+  file: string;
+  lines: number;
+  words: number;
+  estimatedTokens: number;
+  summary?: string;
+}
+
+export interface ProjectOverhead {
+  project: string;
+  cwd: string;
+  items: OverheadItem[];
+  totalTokens: number;
+  nexusSectionTokens: number;
+  nexusSectionPct: number;
+  totalSessionLoad: number;
+}
+
+export interface HookDetail {
+  event: string;
+  type: 'command' | 'prompt';
+  description: string;
+  words: number;
+  estimatedTokens: number;
+}
+
+export interface SkillDetail {
+  name: string;
+  hasSkillMd: boolean;
+  words: number;
+  estimatedTokens: number;
+}
+
+export interface OptimizationSuggestion {
+  severity: 'high' | 'medium' | 'low';
+  category: string;
+  title: string;
+  description: string;
+  currentTokens: number;
+  potentialSavings: number;
+  target?: string;
+}
+
+export interface ContextOverhead {
+  globalRules: OverheadItem[];
+  globalRulesTotal: number;
+  skills: SkillDetail[];
+  skillsCount: number;
+  skillsEstTokens: number;
+  hooks: HookDetail[];
+  hookPromptsTotal: number;
+  hookCommandsCount: number;
+  projects: ProjectOverhead[];
+  grandTotal: number;
+  suggestions: OptimizationSuggestion[];
 }
 
 async function get<T>(path: string): Promise<T> {
@@ -301,6 +479,30 @@ export const api = {
       `/query?q=${encodeURIComponent(q)}` + (projectId ? `&projectId=${projectId}` : ''),
     ),
   activity: (limit = 500) => get<ActivityEvent[]>(`/activity?limit=${limit}`),
+  analytics: {
+    sessions: (sinceDays = 30) =>
+      get<SessionAnalytics>(`/analytics/sessions?since=${sinceDays}`),
+    auditDaily: (since?: number, until?: number) => {
+      let url = '/analytics/audit/daily';
+      const params: string[] = [];
+      if (since != null) params.push(`since=${since}`);
+      if (until != null) params.push(`until=${until}`);
+      if (params.length) url += `?${params.join('&')}`;
+      return get<AuditCountByDay[]>(url);
+    },
+    tokens: (sinceDays = 30) =>
+      get<TokenAnalytics>(`/analytics/tokens?since=${sinceDays}`),
+    contextOverhead: () =>
+      get<ContextOverhead>('/analytics/context-overhead'),
+    auditOperations: (since?: number, until?: number) => {
+      let url = '/analytics/audit/operations';
+      const params: string[] = [];
+      if (since != null) params.push(`since=${since}`);
+      if (until != null) params.push(`until=${until}`);
+      if (params.length) url += `?${params.join('&')}`;
+      return get<AuditCountByOperation[]>(url);
+    },
+  },
   native: {
     stats: () => get<NativeStats>('/native/stats'),
     sessions: (cwd?: string) =>

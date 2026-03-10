@@ -4,11 +4,9 @@
  * Called by Claude Code's Stop hook after each session ends.
  * Responsibilities:
  *   1. Mark the project as seen (update lastSeenAt)
- *   2. Run conflict detection against other registered projects
- *
- * Note: Decision/pattern extraction is intentionally NOT done here.
- * Extraction happens in-session — Claude calls nexus_decide and
- * nexus_record_pattern via MCP tools as decisions are made.
+ *   2. Auto-extract decisions/patterns from session transcript (best-effort)
+ *   3. Sync CLAUDE.md with latest knowledge
+ *   4. Run conflict detection against other registered projects
  *
  * Hook config in ~/.claude/settings.json:
  * {
@@ -25,10 +23,28 @@
 
 import { Command } from 'commander';
 import path from 'node:path';
+import os from 'node:os';
 import { log } from '../lib/output.js';
 import { openService } from '../lib/service.js';
-import { detectConflicts, syncClaudeMd } from '@nexus/core';
-import type { Conflict } from '@nexus/core';
+import {
+  detectConflicts,
+  syncClaudeMd,
+  selectRelevantProjects,
+  findRecentJsonlForProject,
+  getSessionDetail,
+  sessionToTranscript,
+  extractFromTranscript,
+} from '@nexus/core';
+import type { Conflict, Decision } from '@nexus/core';
+
+function isLikelyDuplicate(newSummary: string, existing: Decision[]): boolean {
+  const norm = (s: string) => s.toLowerCase().replace(/[^a-z0-9\s]/g, '').trim();
+  const n = norm(newSummary);
+  return existing.some((d) => {
+    const e = norm(d.summary);
+    return e.includes(n.slice(0, 40)) || n.includes(e.slice(0, 40));
+  });
+}
 
 export function hookCommand(): Command {
   const cmd = new Command('hook');
@@ -69,6 +85,42 @@ export function hookCommand(): Command {
           }
           output(`Session recorded for: ${project.name}`);
 
+          // 2. Auto-extract decisions/patterns from session transcript (best-effort)
+          try {
+            const claudeDir = path.join(os.homedir(), '.claude');
+            const jsonlPath = findRecentJsonlForProject(projectPath, claudeDir);
+            if (jsonlPath) {
+              const { events } = await getSessionDetail(jsonlPath);
+              const userTurns = events.filter((e) => e.type === 'user').length;
+              if (userTurns >= 5) {
+                const transcript = sessionToTranscript(events);
+                const existing = svc.getDecisionsForProject(project.id);
+                const extracted = await extractFromTranscript({ transcript, maxChars: 12000 });
+                for (const d of extracted.decisions) {
+                  if (!opts.dryRun && !isLikelyDuplicate(d.summary, existing)) {
+                    svc.recordDecision({
+                      projectId: project.id,
+                      kind: d.kind,
+                      summary: d.summary,
+                      ...(d.rationale ? { rationale: d.rationale } : {}),
+                      ...(opts.sessionId ? { sessionId: opts.sessionId } : {}),
+                    }, 'daemon');
+                  }
+                }
+                for (const p of extracted.patterns) {
+                  if (!opts.dryRun) {
+                    svc.upsertPattern(
+                      { projectId: project.id, name: p.name, description: p.description, ...(p.examplePath ? { examplePath: p.examplePath } : {}) },
+                      'daemon',
+                    );
+                  }
+                }
+              }
+            }
+          } catch {
+            // Never block session teardown
+          }
+
           const projectDecisions = svc.getDecisionsForProject(project.id);
           const allProjects = svc.listProjects();
           const { conflicts } = svc.checkConflicts([project.id]);
@@ -76,11 +128,17 @@ export function hookCommand(): Command {
           const relatedProjects = otherProjects
             .filter((p) => p.parentId === project.id || project.parentId === p.id)
             .map((p) => ({ name: p.name, path: p.path }));
-          const relatedProjectNotes = otherProjects
-            .map((p) => ({ projectName: p.name, notes: svc.getNotesForProject(p.id) }))
-            .filter((rpn) => rpn.notes.length > 0);
+          const allNotesMap = otherProjects.map((p) => ({
+            projectName: p.name,
+            project: p,
+            notes: svc.getNotesForProject(p.id),
+          }));
+          const relatedProjectNotes = selectRelevantProjects(
+            { project, notes: svc.getNotesForProject(project.id) },
+            allNotesMap,
+          );
 
-          // 2. Sync CLAUDE.md so notes/decisions are ready for the next session
+          // 3. Sync CLAUDE.md so notes/decisions are ready for the next session
           try {
             if (!opts.dryRun) {
               const result = syncClaudeMd({
@@ -101,34 +159,35 @@ export function hookCommand(): Command {
             // Sync is best-effort — never block session teardown
           }
 
-          // 3. Conflict detection — compare this project's decisions against others
+          // 4. Conflict detection — compare this project's decisions against others
           if (projectDecisions.length === 0) return;
 
           const conflictProjects = otherProjects
             .filter((p) => svc.getDecisionsForProject(p.id).length > 0)
-            .slice(0, 3); // cap at 3 to keep hook fast
+            .sort((a, b) => (b.lastSeenAt ?? 0) - (a.lastSeenAt ?? 0)) // most-recently-active first
+            .slice(0, 5);
 
-          for (const other of conflictProjects) {
-            const otherDecisions = svc.getDecisionsForProject(other.id);
-
-            try {
-              const newConflicts = await detectConflicts({
-                projectA: { id: project.id, name: project.name, decisions: projectDecisions },
-                projectB: { id: other.id, name: other.name, decisions: otherDecisions },
-              });
-
-              for (const conflict of newConflicts) {
-                if (!opts.dryRun) {
-                  svc.recordConflict(conflict.projectIds, conflict.description, 'daemon');
+          await Promise.all(
+            conflictProjects.map(async (other) => {
+              const otherDecisions = svc.getDecisionsForProject(other.id);
+              try {
+                const newConflicts = await detectConflicts({
+                  projectA: { id: project.id, name: project.name, decisions: projectDecisions },
+                  projectB: { id: other.id, name: other.name, decisions: otherDecisions },
+                });
+                for (const conflict of newConflicts) {
+                  if (!opts.dryRun) {
+                    svc.recordConflict(conflict.projectIds, conflict.description, 'daemon');
+                  }
+                  if (!opts.quiet) {
+                    log.warn(`Conflict with ${other.name}: ${conflict.description}`);
+                  }
                 }
-                if (!opts.quiet) {
-                  log.warn(`Conflict with ${other.name}: ${conflict.description}`);
-                }
+              } catch {
+                // Conflict detection is best-effort — skip if auth unavailable
               }
-            } catch {
-              // Conflict detection is best-effort — skip if auth unavailable
-            }
-          }
+            }),
+          );
         } catch (err) {
           if (!opts.quiet) {
             log.error(`Hook failed: ${err instanceof Error ? err.message : String(err)}`);

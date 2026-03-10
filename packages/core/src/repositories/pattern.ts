@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import type { NexusDb } from '../db/connection.js';
 import type { Pattern } from '../types/index.js';
 import { auditLog } from './audit.js';
+import { filterSecrets } from '../security/secret-filter.js';
 
 interface PatternRow {
   id: string;
@@ -66,18 +67,20 @@ export function upsertPattern(
     .prepare('SELECT * FROM patterns WHERE project_id = ? AND name = ?')
     .get(params.projectId, params.name) as PatternRow | undefined;
 
+  const safeDescription = filterSecrets(params.description).filtered;
+
   if (existing) {
     db.prepare(
       'UPDATE patterns SET frequency = frequency + 1, last_seen_at = ?, description = ? WHERE id = ?',
-    ).run(Date.now(), params.description, existing.id);
-    return rowToPattern({ ...existing, frequency: existing.frequency + 1, last_seen_at: Date.now() });
+    ).run(Date.now(), safeDescription, existing.id);
+    return rowToPattern({ ...existing, description: safeDescription, frequency: existing.frequency + 1, last_seen_at: Date.now() });
   }
 
   const pattern: Pattern = {
     id: randomUUID(),
     projectId: params.projectId,
-    name: params.name,
-    description: params.description,
+    name: filterSecrets(params.name).filtered,
+    description: safeDescription,
     examplePath: params.examplePath,
     frequency: 1,
     lastSeenAt: Date.now(),

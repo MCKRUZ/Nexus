@@ -11,6 +11,8 @@ import { Notes } from './pages/Notes.js';
 import { Conflicts } from './pages/Conflicts.js';
 import { Preferences } from './pages/Preferences.js';
 import { Search } from './pages/Search.js';
+import { Analytics } from './pages/Analytics.js';
+import { TokenAudit } from './pages/TokenAudit.js';
 import { Observability } from './pages/Observability.js';
 import { Settings } from './pages/Settings.js';
 
@@ -94,6 +96,12 @@ export function App() {
           <NavLink to="/search" className={({ isActive }) => isActive ? 'active' : ''}>
             <span className="icon">⌕</span> Search
           </NavLink>
+          <NavLink to="/analytics" className={({ isActive }) => isActive ? 'active' : ''}>
+            <span className="icon">◉</span> Analytics
+          </NavLink>
+          <NavLink to="/tokens" className={({ isActive }) => isActive ? 'active' : ''}>
+            <span className="icon">⊛</span> Token Audit
+          </NavLink>
           <NavLink to="/observability" className={({ isActive }) => isActive ? 'active' : ''}>
             <span className="icon">⬡</span> Observability
           </NavLink>
@@ -117,6 +125,8 @@ export function App() {
           <Route path="/conflicts" element={<PageShell title="Conflicts"><Conflicts /></PageShell>} />
           <Route path="/preferences" element={<PageShell title="Preferences"><Preferences /></PageShell>} />
           <Route path="/search" element={<PageShell title="Search"><Search /></PageShell>} />
+          <Route path="/analytics" element={<PageShell title="Nexus Analytics"><Analytics /></PageShell>} />
+          <Route path="/tokens" element={<PageShell title="Token Audit"><TokenAudit /></PageShell>} />
           <Route path="/observability" element={<PageShell title="LLM Observability"><Observability /></PageShell>} />
           <Route path="/settings" element={<PageShell title="Settings"><Settings /></PageShell>} />
         </Routes>

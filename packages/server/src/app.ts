@@ -4,7 +4,8 @@ import os from 'node:os';
 import { Hono } from 'hono';
 import { cors } from 'hono/cors';
 import { serveStatic } from '@hono/node-server/serve-static';
-import { NexusService, isInitialized, listSessions, getSessionDetail, getNativeStats, syncClaudeMd } from '@nexus/core';
+import { NexusService, isInitialized, listSessions, getSessionDetail, getNativeStats, syncClaudeMd, selectRelevantProjects, computeSessionAnalytics, computeTokenAnalytics, computeContextOverhead } from '@nexus/core';
+import type { SessionAnalytics, TokenAnalytics, ContextOverhead } from '@nexus/core';
 import type { DecisionKind, UpsertNoteParams, Conflict } from '@nexus/core';
 
 const app = new Hono();
@@ -254,9 +255,15 @@ app.post('/api/sync', (c) => {
       const relatedProjects = otherProjects
         .filter((p) => p.parentId === project.id || project.parentId === p.id)
         .map((p) => ({ name: p.name, path: p.path }));
-      const relatedProjectNotes = otherProjects
-        .map((p) => ({ projectName: p.name, notes: svc.getNotesForProject(p.id) }))
-        .filter((rpn) => rpn.notes.length > 0);
+      const allNotesMap = otherProjects.map((p) => ({
+        projectName: p.name,
+        project: p,
+        notes: svc.getNotesForProject(p.id),
+      }));
+      const relatedProjectNotes = selectRelevantProjects(
+        { project, notes },
+        allNotesMap,
+      );
 
       try {
         const result = syncClaudeMd({
@@ -391,6 +398,82 @@ app.get('/api/native/sessions/:encodedPath', async (c) => {
     const msg = err instanceof Error ? err.message : 'Unknown error';
     return c.json({ error: msg }, 404);
   }
+});
+
+// ─── Analytics ───────────────────────────────────────────────────────────────
+
+let sessionAnalyticsCache: { data: SessionAnalytics; at: number } | null = null;
+
+app.get('/api/analytics/sessions', async (c) => {
+  const sinceDays = parseInt(c.req.query('since') ?? '30', 10);
+
+  // 60-second cache
+  if (sessionAnalyticsCache && Date.now() - sessionAnalyticsCache.at < 60_000) {
+    return c.json(sessionAnalyticsCache.data);
+  }
+
+  try {
+    const data = await computeSessionAnalytics(CLAUDE_DIR, { sinceDays });
+    sessionAnalyticsCache = { data, at: Date.now() };
+    return c.json(data);
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : 'Unknown error';
+    return c.json({ error: msg }, 500);
+  }
+});
+
+let tokenAnalyticsCache: { data: TokenAnalytics; at: number; sinceDays: number } | null = null;
+
+app.get('/api/analytics/tokens', async (c) => {
+  const sinceDays = parseInt(c.req.query('since') ?? '30', 10);
+
+  // 60-second cache (invalidate if range changes)
+  if (tokenAnalyticsCache && tokenAnalyticsCache.sinceDays === sinceDays && Date.now() - tokenAnalyticsCache.at < 60_000) {
+    return c.json(tokenAnalyticsCache.data);
+  }
+
+  try {
+    const data = await computeTokenAnalytics(CLAUDE_DIR, { sinceDays });
+    tokenAnalyticsCache = { data, at: Date.now(), sinceDays };
+    return c.json(data);
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : 'Unknown error';
+    return c.json({ error: msg }, 500);
+  }
+});
+
+app.get('/api/analytics/context-overhead', (c) => {
+  try {
+    const data = computeContextOverhead(CLAUDE_DIR);
+    return c.json(data);
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : 'Unknown error';
+    return c.json({ error: msg }, 500);
+  }
+});
+
+app.get('/api/analytics/audit/daily', (c) => {
+  const since = c.req.query('since');
+  const until = c.req.query('until');
+  const counts = withSvc((svc) =>
+    svc.getAuditCountsByDay({
+      ...(since ? { since: parseInt(since, 10) } : {}),
+      ...(until ? { until: parseInt(until, 10) } : {}),
+    }),
+  );
+  return c.json(counts);
+});
+
+app.get('/api/analytics/audit/operations', (c) => {
+  const since = c.req.query('since');
+  const until = c.req.query('until');
+  const counts = withSvc((svc) =>
+    svc.getAuditCountsByOperation({
+      ...(since ? { since: parseInt(since, 10) } : {}),
+      ...(until ? { until: parseInt(until, 10) } : {}),
+    }),
+  );
+  return c.json(counts);
 });
 
 // ─── Langfuse Proxy ───────────────────────────────────────────────────────────

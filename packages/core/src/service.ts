@@ -22,6 +22,14 @@ import {
   type CreateDecisionParams,
 } from './repositories/decision.js';
 import {
+  getAuditEntries,
+  getAuditCountsByDay,
+  getAuditCountsByOperation,
+  type AuditQueryOptions,
+  type AuditCountByDay,
+  type AuditCountByOperation,
+} from './repositories/audit.js';
+import {
   searchPatterns,
   findPatternsByProject,
   upsertPattern,
@@ -42,8 +50,10 @@ import {
   deleteNote,
   type UpsertNoteParams,
 } from './repositories/note.js';
-import type { Project, Decision, Pattern, Preference, Conflict, Note } from './types/index.js';
+import type { Project, Decision, Pattern, Preference, Conflict, Note, AuditEntry } from './types/index.js';
 import type { DecisionKind } from './types/index.js';
+
+export type { AuditQueryOptions, AuditCountByDay, AuditCountByOperation };
 
 export type { UpsertNoteParams };
 
@@ -208,6 +218,20 @@ export class NexusService {
 
   deleteNote(id: string, source: 'cli' | 'mcp' | 'daemon' = 'mcp'): boolean {
     return deleteNote(this.db, id, source);
+  }
+
+  // ─── Audit Log Queries ────────────────────────────────────────────────────
+
+  getAuditEntries(opts?: AuditQueryOptions): AuditEntry[] {
+    return getAuditEntries(this.db, opts);
+  }
+
+  getAuditCountsByDay(opts?: AuditQueryOptions): AuditCountByDay[] {
+    return getAuditCountsByDay(this.db, opts);
+  }
+
+  getAuditCountsByOperation(opts?: AuditQueryOptions): AuditCountByOperation[] {
+    return getAuditCountsByOperation(this.db, opts);
   }
 
   // ─── Cross-entity query ────────────────────────────────────────────────────

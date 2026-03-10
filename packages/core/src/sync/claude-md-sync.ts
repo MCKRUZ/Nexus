@@ -19,6 +19,14 @@ import type { Decision, Pattern, Preference, Conflict, Note } from '../types/ind
 const SECTION_START = '<!-- nexus:start -->';
 const SECTION_END = '<!-- nexus:end -->';
 
+// Token budget constants — CLAUDE.md Nexus section hard cap
+const MAX_SECTION_CHARS = 6000;       // ≈1,500 tokens
+const MAX_DECISIONS = 5;              // injected decisions
+const MAX_PATTERNS = 3;               // injected patterns
+const MAX_OWN_NOTE_CHARS = 150;       // own project note content
+const MAX_CROSS_NOTE_CHARS = 80;      // cross-project note content (excerpt)
+const MAX_DECISION_SUMMARY_CHARS = 80; // truncate long decision summaries
+
 export interface SyncInput {
   projectPath: string;
   notes: Note[];
@@ -38,10 +46,19 @@ export interface SyncResult {
   newSection: string;
 }
 
+function trunc(s: string, max: number): string {
+  return s.length > max ? s.slice(0, max - 1) + '…' : s;
+}
+
 /**
- * Generate the Nexus Intelligence section content.
+ * Build the Nexus Intelligence section lines with a given budget config.
  */
-function generateSection(input: SyncInput): string {
+function buildLines(input: SyncInput, opts: {
+  maxDecisions: number;
+  maxPatterns: number;
+  ownNoteChars: number;
+  crossNoteChars: number;
+}): string[] {
   const lines: string[] = [
     SECTION_START,
     '## Nexus Intelligence',
@@ -51,13 +68,13 @@ function generateSection(input: SyncInput): string {
     '',
   ];
 
-  // Project context notes — full content, sorted by most recently updated
+  // Project context notes — truncated to budget, sorted by most recently updated
   const sortedNotes = [...input.notes].sort((a, b) => b.updatedAt - a.updatedAt);
   if (sortedNotes.length > 0) {
     lines.push('### Project Context');
     for (const note of sortedNotes) {
       lines.push(`#### ${note.title}`);
-      lines.push(note.content);
+      lines.push(trunc(note.content, opts.ownNoteChars));
       if (note.tags.length > 0) {
         lines.push(`*Tags: ${note.tags.join(', ')}*`);
       }
@@ -72,7 +89,7 @@ function generateSection(input: SyncInput): string {
     lines.push(`### Context from ${rpn.projectName}`);
     for (const note of sorted) {
       lines.push(`#### ${note.title}`);
-      lines.push(note.content);
+      lines.push(trunc(note.content, opts.crossNoteChars));
       if (note.tags.length > 0) {
         lines.push(`*Tags: ${note.tags.join(', ')}*`);
       }
@@ -80,32 +97,35 @@ function generateSection(input: SyncInput): string {
     }
   }
 
-  // Key decisions (top 10, high-confidence kinds first)
+  // Key decisions (priority-sorted, capped, summaries truncated)
   const priorityOrder: Decision['kind'][] = ['security', 'architecture', 'library', 'pattern', 'naming', 'other'];
-  const sortedDecisions = [...input.decisions].sort(
-    (a, b) => priorityOrder.indexOf(a.kind) - priorityOrder.indexOf(b.kind),
-  ).slice(0, 10);
+  const sortedDecisions = [...input.decisions]
+    .sort((a, b) => priorityOrder.indexOf(a.kind) - priorityOrder.indexOf(b.kind))
+    .slice(0, opts.maxDecisions);
 
   if (sortedDecisions.length > 0) {
     lines.push('### Recorded Decisions');
     for (const d of sortedDecisions) {
-      lines.push(`- **[${d.kind}]** ${d.summary}`);
+      const summary = trunc(d.summary, MAX_DECISION_SUMMARY_CHARS);
+      lines.push(`- **[${d.kind}]** ${summary}`);
       if (d.rationale) lines.push(`  > ${d.rationale}`);
     }
     lines.push('');
   }
 
-  // Top patterns
-  const topPatterns = [...input.patterns]
-    .sort((a, b) => b.frequency - a.frequency)
-    .slice(0, 5);
+  // Top patterns (capped)
+  if (opts.maxPatterns > 0) {
+    const topPatterns = [...input.patterns]
+      .sort((a, b) => b.frequency - a.frequency)
+      .slice(0, opts.maxPatterns);
 
-  if (topPatterns.length > 0) {
-    lines.push('### Established Patterns');
-    for (const p of topPatterns) {
-      lines.push(`- **${p.name}**: ${p.description}`);
+    if (topPatterns.length > 0) {
+      lines.push('### Established Patterns');
+      for (const p of topPatterns) {
+        lines.push(`- **${p.name}**: ${p.description}`);
+      }
+      lines.push('');
     }
-    lines.push('');
   }
 
   // Preferences
@@ -141,7 +161,60 @@ function generateSection(input: SyncInput): string {
     lines.push('');
   }
 
+  lines.push(`*[Nexus: run \`nexus query\` to search full knowledge base]*`);
   lines.push(SECTION_END);
+  return lines;
+}
+
+/**
+ * Generate the Nexus Intelligence section content.
+ * Enforces a hard token budget via progressive truncation.
+ */
+function generateSection(input: SyncInput): string {
+  // Phase 0: standard limits
+  let lines = buildLines(input, {
+    maxDecisions: MAX_DECISIONS,
+    maxPatterns: MAX_PATTERNS,
+    ownNoteChars: MAX_OWN_NOTE_CHARS,
+    crossNoteChars: MAX_CROSS_NOTE_CHARS,
+  });
+
+  if (lines.join('\n').length <= MAX_SECTION_CHARS) {
+    return lines.join('\n');
+  }
+
+  // Phase 1: compress cross-project notes to title stubs (40 chars)
+  lines = buildLines(input, {
+    maxDecisions: MAX_DECISIONS,
+    maxPatterns: MAX_PATTERNS,
+    ownNoteChars: MAX_OWN_NOTE_CHARS,
+    crossNoteChars: 40,
+  });
+
+  if (lines.join('\n').length <= MAX_SECTION_CHARS) {
+    return lines.join('\n');
+  }
+
+  // Phase 2: reduce decisions to 3
+  lines = buildLines(input, {
+    maxDecisions: 3,
+    maxPatterns: MAX_PATTERNS,
+    ownNoteChars: MAX_OWN_NOTE_CHARS,
+    crossNoteChars: 40,
+  });
+
+  if (lines.join('\n').length <= MAX_SECTION_CHARS) {
+    return lines.join('\n');
+  }
+
+  // Phase 3: drop patterns entirely
+  lines = buildLines(input, {
+    maxDecisions: 3,
+    maxPatterns: 0,
+    ownNoteChars: MAX_OWN_NOTE_CHARS,
+    crossNoteChars: 40,
+  });
+
   return lines.join('\n');
 }
 
