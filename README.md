@@ -58,73 +58,117 @@ packages/
 
 ---
 
-## Quick Start — Desktop App
+## Installation
 
-The fastest way to run Nexus is the pre-built desktop app. Download the latest installer from [Releases](../../releases) and run it. The app:
+There are three ways to run Nexus, from easiest to most flexible.
+
+### Option A: Desktop App (pre-built)
+
+Download the latest `.exe` installer from [Releases](https://github.com/MCKRUZ/Nexus/releases) and run it. The app:
 
 1. Spawns the Nexus HTTP server automatically as a background sidecar
 2. Opens the dashboard in a native window
 3. Hides to the system tray when you close the window (server keeps running)
 4. Quit from the tray menu to exit completely
 
-No Node.js, no separate server process, no terminal required.
+No Node.js, no terminal, no manual setup required.
 
----
+### Option B: From Source (recommended for contributors)
 
-## Setup (from source)
+#### Prerequisites
 
-### Prerequisites
+| Requirement | Why |
+|-------------|-----|
+| [Node.js 22+](https://nodejs.org/) | Runtime for all packages |
+| [pnpm](https://pnpm.io/) | Workspace package manager (`npm install -g pnpm`) |
+| C++ build tools | Required by `better-sqlite3` native addon |
+| [Rust + Cargo](https://rustup.rs/) | Only needed if building the desktop app (Option C) |
 
-- Node.js 22+
-- pnpm (`npm install -g pnpm`)
-- Rust + Cargo (only for building the desktop app)
+**Windows note:** Install "Desktop development with C++" workload from [Visual Studio Build Tools](https://visualstudio.microsoft.com/visual-cpp-build-tools/) for the native SQLite compilation.
 
-### Install
+**macOS:** `xcode-select --install` provides the necessary build tools.
+
+**Linux:** `sudo apt install build-essential python3` (Debian/Ubuntu) or equivalent.
+
+#### Clone and build
 
 ```bash
-git clone <this-repo>
+git clone https://github.com/MCKRUZ/Nexus.git
 cd Nexus
 pnpm install
 pnpm build
 ```
 
-### Initialize
+#### Initialize Nexus
 
 ```bash
-# Run once to create ~/.nexus/ and register your first project
 node packages/cli/dist/index.js init
-
-# Or if you've linked the CLI globally:
-nexus init
 ```
 
-This creates `~/.nexus/nexus.db` (SQLCipher-encrypted) and `~/.nexus/config.json`.
+The interactive wizard walks you through:
+
+1. **Encryption key** — auto-generated SQLCipher key for your database
+2. **LLM provider** — Anthropic (API key or Claude Code OAuth), OpenRouter, or Ollama (local/free)
+3. **Langfuse** — optional observability tracing (base URL + keys, with live connection test)
+4. **Claude Code integration** — installs MCP server, Stop hook, and session tracking hooks
+5. **Memory rule** — drops `nexus-memory.md` into `~/.claude/rules/`
+6. **Project registration** — registers the current directory as your first project
+7. **Health check** — verifies everything is wired up correctly
+
+This creates `~/.nexus/nexus.db` (encrypted) and `~/.nexus/config.json`.
+
+> **Important:** Back up `~/.nexus/config.json` — it contains your encryption key. Lose it and your database is unrecoverable.
+
+#### Make `nexus` available globally (optional)
+
+```bash
+# Link the CLI so you can run "nexus" from anywhere
+cd packages/cli && pnpm link --global
+```
+
+After linking, use `nexus init`, `nexus sync`, `nexus query`, etc. directly.
+
+#### Restart Claude Code
+
+After init, restart Claude Code so it picks up the new MCP server and hooks.
+
+### Option C: Build the Desktop App from Source
+
+Requires everything from Option B plus Rust/Cargo.
+
+```bash
+# Windows (from repo root)
+nexus-build.bat
+
+# Or manually:
+pnpm build
+pnpm --filter @nexus/server compile
+pnpm tauri:build
+```
+
+The installer lands at `packages/dashboard/src-tauri/target/release/bundle/nsis/Nexus_*-setup.exe`.
 
 ---
 
-## Running
+## Running the Web Dashboard
 
-### Desktop app (production build)
-
-```bash
-cd packages/dashboard
-pnpm tauri:build
-# Outputs: src-tauri/target/release/nexus-desktop.exe
-#          src-tauri/target/release/bundle/msi/Nexus_*.msi
-#          src-tauri/target/release/bundle/nsis/Nexus_*-setup.exe
-```
-
-### Web server (standalone)
+If you installed from source (Option B), you can run the dashboard without the desktop app:
 
 ```bash
-# Start the server (auto-serves the built dashboard at localhost:47340)
+# Production mode — serves the built dashboard at localhost:47340
 node packages/server/dist/index.js
 
-# Or in dev mode (Vite on :5173, server on :47340)
+# Dev mode — Vite hot-reload on :5173, API server on :47340
 pnpm -r dev
 ```
 
-Open `http://localhost:5173` (Vite dev) or `http://localhost:47340` (production).
+Open [http://localhost:47340](http://localhost:47340) (production) or [http://localhost:5173](http://localhost:5173) (dev).
+
+The server binds to `127.0.0.1` by default. To change the port or bind address:
+
+```bash
+node packages/server/dist/index.js --port 8080 --bind 0.0.0.0
+```
 
 ---
 
@@ -193,11 +237,24 @@ Available MCP tools:
 
 ## Configuration
 
-Config lives at `~/.nexus/config.json`:
+Config lives at `~/.nexus/config.json`. Created by `nexus init` — you can also edit it directly:
 
-```json
+```jsonc
 {
-  "encryptionKey": "...",
+  "encryptionKey": "...",           // Auto-generated — DO NOT LOSE
+
+  // LLM provider for extraction (pick one)
+  "llmProvider": "anthropic",       // "anthropic" | "openrouter" | "ollama"
+  "anthropicApiKey": "sk-ant-...",  // Optional — omit to use Claude Code OAuth
+  "anthropicBaseUrl": "...",        // Optional — custom Anthropic endpoint
+
+  "openrouterApiKey": "sk-or-...", // Required if provider is "openrouter"
+  "openrouterModel": "anthropic/claude-haiku-4-5",
+
+  "ollamaBaseUrl": "http://localhost:11434",  // Required if provider is "ollama"
+  "ollamaModel": "llama3.1:8b",
+
+  // Optional observability
   "langfuse": {
     "baseUrl": "https://your-langfuse-host",
     "publicKey": "pk-lf-...",
@@ -301,4 +358,4 @@ Requires Rust/Cargo. The build runs `pnpm build` (frontend) + `pnpm compile:serv
 
 ## License
 
-Private — not yet open source.
+MIT
