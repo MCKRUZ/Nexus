@@ -14,29 +14,29 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
-import type { Decision, Pattern, Preference, Conflict, Note } from '../types/index.js';
+import type { Decision, Conflict, Note } from '../types/index.js';
 
 const SECTION_START = '<!-- nexus:start -->';
 const SECTION_END = '<!-- nexus:end -->';
 
 // Token budget constants — CLAUDE.md Nexus section hard cap
-const MAX_SECTION_CHARS = 6000;       // ≈1,500 tokens
-const MAX_DECISIONS = 5;              // injected decisions
-const MAX_PATTERNS = 3;               // injected patterns
-const MAX_OWN_NOTE_CHARS = 150;       // own project note content
-const MAX_CROSS_NOTE_CHARS = 80;      // cross-project note content (excerpt)
+const MAX_SECTION_CHARS = 6000;       // ≈1,500 tokens (safety net)
 const MAX_DECISION_SUMMARY_CHARS = 80; // truncate long decision summaries
+const MAX_PORTFOLIO_DESC_CHARS = 80;  // portfolio map description
+
+export interface PortfolioEntry {
+  name: string;
+  description: string;  // from "Project Overview" note, truncated
+  tags: string[];
+  isCurrent: boolean;
+}
 
 export interface SyncInput {
   projectPath: string;
-  notes: Note[];
-  /** Notes inherited from parent/child/sibling projects — shared cross-project context */
-  relatedProjectNotes?: Array<{ projectName: string; notes: Note[] }>;
-  decisions: Decision[];
-  patterns: Pattern[];
-  preferences: Preference[];
-  conflicts: Conflict[];
-  relatedProjects: Array<{ name: string; path: string }>;
+  notes: Note[];              // own-project notes
+  portfolio: PortfolioEntry[];// ALL registered projects
+  decisions: Decision[];      // own-project decisions
+  conflicts: Conflict[];      // open conflicts involving this project
 }
 
 export interface SyncResult {
@@ -55,9 +55,9 @@ function trunc(s: string, max: number): string {
  */
 function buildLines(input: SyncInput, opts: {
   maxDecisions: number;
-  maxPatterns: number;
   ownNoteChars: number;
-  crossNoteChars: number;
+  portfolioDescChars: number;
+  includeConflicts: boolean;
 }): string[] {
   const lines: string[] = [
     SECTION_START,
@@ -68,11 +68,31 @@ function buildLines(input: SyncInput, opts: {
     '',
   ];
 
-  // Project context notes — truncated to budget, sorted by most recently updated
-  const sortedNotes = [...input.notes].sort((a, b) => b.updatedAt - a.updatedAt);
-  if (sortedNotes.length > 0) {
+  // ── Portfolio Map ──────────────────────────────────────────────────────────
+  if (input.portfolio.length > 0) {
+    lines.push('### Portfolio');
+    lines.push('| Project | Description | Tech |');
+    lines.push('|---------|------------|------|');
+    for (const entry of input.portfolio) {
+      const name = entry.isCurrent ? `**${entry.name}** (this)` : entry.name;
+      const desc = entry.description
+        ? trunc(entry.description, opts.portfolioDescChars)
+        : '—';
+      const tech = entry.tags.slice(0, 3).join(', ') || '—';
+      lines.push(`| ${name} | ${desc} | ${tech} |`);
+    }
+    lines.push('');
+  }
+
+  // ── Own-Project Context ────────────────────────────────────────────────────
+  // Exclude "Project Overview" notes — that content is already in the portfolio map
+  const contextNotes = [...input.notes]
+    .filter((n) => n.title !== 'Project Overview')
+    .sort((a, b) => b.updatedAt - a.updatedAt);
+
+  if (contextNotes.length > 0) {
     lines.push('### Project Context');
-    for (const note of sortedNotes) {
+    for (const note of contextNotes) {
       lines.push(`#### ${note.title}`);
       lines.push(trunc(note.content, opts.ownNoteChars));
       if (note.tags.length > 0) {
@@ -82,22 +102,7 @@ function buildLines(input: SyncInput, opts: {
     }
   }
 
-  // Notes inherited from related projects (parent/child) — cross-project context
-  const relatedWithNotes = (input.relatedProjectNotes ?? []).filter((rpn) => rpn.notes.length > 0);
-  for (const rpn of relatedWithNotes) {
-    const sorted = [...rpn.notes].sort((a, b) => b.updatedAt - a.updatedAt);
-    lines.push(`### Context from ${rpn.projectName}`);
-    for (const note of sorted) {
-      lines.push(`#### ${note.title}`);
-      lines.push(trunc(note.content, opts.crossNoteChars));
-      if (note.tags.length > 0) {
-        lines.push(`*Tags: ${note.tags.join(', ')}*`);
-      }
-      lines.push('');
-    }
-  }
-
-  // Key decisions (priority-sorted, capped, summaries truncated)
+  // ── Recorded Decisions ─────────────────────────────────────────────────────
   const priorityOrder: Decision['kind'][] = ['security', 'architecture', 'library', 'pattern', 'naming', 'other'];
   const sortedDecisions = [...input.decisions]
     .sort((a, b) => priorityOrder.indexOf(a.kind) - priorityOrder.indexOf(b.kind))
@@ -113,54 +118,29 @@ function buildLines(input: SyncInput, opts: {
     lines.push('');
   }
 
-  // Top patterns (capped)
-  if (opts.maxPatterns > 0) {
-    const topPatterns = [...input.patterns]
-      .sort((a, b) => b.frequency - a.frequency)
-      .slice(0, opts.maxPatterns);
-
-    if (topPatterns.length > 0) {
-      lines.push('### Established Patterns');
-      for (const p of topPatterns) {
-        lines.push(`- **${p.name}**: ${p.description}`);
+  // ── Active Conflicts ───────────────────────────────────────────────────────
+  if (opts.includeConflicts) {
+    const openConflicts = input.conflicts.filter((c) => !c.resolvedAt && c.tier === 'conflict');
+    if (openConflicts.length > 0) {
+      lines.push('### Active Conflicts');
+      for (const c of openConflicts) {
+        lines.push(`- [${c.severity}] ${c.description}`);
       }
+      lines.push('');
+    }
+
+    const openAdvisories = input.conflicts.filter((c) => !c.resolvedAt && c.tier === 'advisory');
+    if (openAdvisories.length > 0) {
+      lines.push(`*${openAdvisories.length} cross-project advisor${openAdvisories.length === 1 ? 'y' : 'ies'} — run \`nexus query\` for details*`);
       lines.push('');
     }
   }
 
-  // Preferences
-  const projectPrefs = input.preferences.filter((p) => p.scope === 'project').slice(0, 8);
-  const globalPrefs = input.preferences.filter((p) => p.scope === 'global').slice(0, 5);
-  const allPrefs = [...projectPrefs, ...globalPrefs];
+  // ── Behavioral Rule ────────────────────────────────────────────────────────
+  lines.push('> **Cross-project rule**: Before making decisions that affect shared concerns (APIs, auth, data formats, deployment), run `nexus_query` to check for existing decisions and conflicts across the portfolio.');
+  lines.push('');
 
-  if (allPrefs.length > 0) {
-    lines.push('### Preferences');
-    for (const pref of allPrefs) {
-      const scope = pref.scope === 'global' ? ' *(global)*' : '';
-      lines.push(`- \`${pref.key}\` = ${pref.value}${scope}`);
-    }
-    lines.push('');
-  }
-
-  // Open conflicts
-  const openConflicts = input.conflicts.filter((c) => !c.resolvedAt);
-  if (openConflicts.length > 0) {
-    lines.push('### ⚠ Open Conflicts');
-    for (const c of openConflicts) {
-      lines.push(`- ${c.description}`);
-    }
-    lines.push('');
-  }
-
-  // Related projects
-  if (input.relatedProjects.length > 0) {
-    lines.push('### Related Projects');
-    for (const rp of input.relatedProjects) {
-      lines.push(`- **${rp.name}**: \`${rp.path}\``);
-    }
-    lines.push('');
-  }
-
+  // ── Footer ─────────────────────────────────────────────────────────────────
   lines.push(`*[Nexus: run \`nexus query\` to search full knowledge base]*`);
   lines.push(SECTION_END);
   return lines;
@@ -171,48 +151,48 @@ function buildLines(input: SyncInput, opts: {
  * Enforces a hard token budget via progressive truncation.
  */
 function generateSection(input: SyncInput): string {
-  // Phase 0: standard limits
+  // Phase 0: full budget
   let lines = buildLines(input, {
-    maxDecisions: MAX_DECISIONS,
-    maxPatterns: MAX_PATTERNS,
-    ownNoteChars: MAX_OWN_NOTE_CHARS,
-    crossNoteChars: MAX_CROSS_NOTE_CHARS,
+    maxDecisions: 5,
+    ownNoteChars: 150,
+    portfolioDescChars: MAX_PORTFOLIO_DESC_CHARS,
+    includeConflicts: true,
   });
 
   if (lines.join('\n').length <= MAX_SECTION_CHARS) {
     return lines.join('\n');
   }
 
-  // Phase 1: compress cross-project notes to title stubs (40 chars)
-  lines = buildLines(input, {
-    maxDecisions: MAX_DECISIONS,
-    maxPatterns: MAX_PATTERNS,
-    ownNoteChars: MAX_OWN_NOTE_CHARS,
-    crossNoteChars: 40,
-  });
-
-  if (lines.join('\n').length <= MAX_SECTION_CHARS) {
-    return lines.join('\n');
-  }
-
-  // Phase 2: reduce decisions to 3
+  // Phase 1: reduce decisions
   lines = buildLines(input, {
     maxDecisions: 3,
-    maxPatterns: MAX_PATTERNS,
-    ownNoteChars: MAX_OWN_NOTE_CHARS,
-    crossNoteChars: 40,
+    ownNoteChars: 150,
+    portfolioDescChars: MAX_PORTFOLIO_DESC_CHARS,
+    includeConflicts: true,
   });
 
   if (lines.join('\n').length <= MAX_SECTION_CHARS) {
     return lines.join('\n');
   }
 
-  // Phase 3: drop patterns entirely
+  // Phase 2: compress descriptions and notes
   lines = buildLines(input, {
     maxDecisions: 3,
-    maxPatterns: 0,
-    ownNoteChars: MAX_OWN_NOTE_CHARS,
-    crossNoteChars: 40,
+    ownNoteChars: 100,
+    portfolioDescChars: 40,
+    includeConflicts: true,
+  });
+
+  if (lines.join('\n').length <= MAX_SECTION_CHARS) {
+    return lines.join('\n');
+  }
+
+  // Phase 3: drop conflicts section
+  lines = buildLines(input, {
+    maxDecisions: 3,
+    ownNoteChars: 100,
+    portfolioDescChars: 40,
+    includeConflicts: false,
   });
 
   return lines.join('\n');

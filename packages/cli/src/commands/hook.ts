@@ -23,27 +23,80 @@
 
 import { Command } from 'commander';
 import path from 'node:path';
+import fs from 'node:fs';
 import os from 'node:os';
 import { log } from '../lib/output.js';
 import { openService } from '../lib/service.js';
 import {
-  detectConflicts,
-  syncClaudeMd,
-  selectRelevantProjects,
+  installHook,
+  getClaudeSettingsPath,
+  getClaudeHooksDir,
+} from '../lib/settings.js';
+import {
+  analyzePortfolio,
   findRecentJsonlForProject,
   getSessionDetail,
   sessionToTranscript,
   extractFromTranscript,
+  isSimilarDecision,
+  isSimilarPattern,
 } from '@nexus/core';
-import type { Conflict, Decision } from '@nexus/core';
+import type { Conflict, LlmUsageInfo } from '@nexus/core';
 
-function isLikelyDuplicate(newSummary: string, existing: Decision[]): boolean {
-  const norm = (s: string) => s.toLowerCase().replace(/[^a-z0-9\s]/g, '').trim();
-  const n = norm(newSummary);
-  return existing.some((d) => {
-    const e = norm(d.summary);
-    return e.includes(n.slice(0, 40)) || n.includes(e.slice(0, 40));
-  });
+/** Rough cost per 1M tokens by provider. Used for audit_log metadata only. */
+const COST_PER_M_INPUT: Record<string, number> = {
+  anthropic: 0.80,   // Haiku 4.5
+  openrouter: 1.00,  // varies, conservative estimate
+  ollama: 0,         // local
+};
+const COST_PER_M_OUTPUT: Record<string, number> = {
+  anthropic: 4.00,
+  openrouter: 5.00,
+  ollama: 0,
+};
+
+function estimateLlmCost(usage: LlmUsageInfo): number {
+  const inputRate = COST_PER_M_INPUT[usage.provider] ?? 1.0;
+  const outputRate = COST_PER_M_OUTPUT[usage.provider] ?? 5.0;
+  return (
+    ((usage.inputTokens ?? 0) * inputRate) / 1_000_000 +
+    ((usage.outputTokens ?? 0) * outputRate) / 1_000_000
+  );
+}
+
+/**
+ * Install session tracking hooks (.mjs files + settings.json entries).
+ * Exported so `nexus init` wizard can call this directly.
+ */
+export function installSessionTrackingHooks(
+  nexusRoot: string,
+  dryRun?: boolean,
+): { ok: boolean; error?: string } {
+  const postToolSrc = path.join(nexusRoot, 'hooks', 'nexus-post-tool-use.mjs');
+  const sessionStartSrc = path.join(nexusRoot, 'hooks', 'nexus-session-start.mjs');
+
+  if (!fs.existsSync(postToolSrc) || !fs.existsSync(sessionStartSrc)) {
+    return { ok: false, error: 'Hook source files not found. Ensure the Nexus repo has hooks/ directory.' };
+  }
+
+  const hooksDir = getClaudeHooksDir();
+
+  if (!dryRun) {
+    fs.mkdirSync(hooksDir, { recursive: true });
+    fs.copyFileSync(postToolSrc, path.join(hooksDir, 'nexus-post-tool-use.mjs'));
+    fs.copyFileSync(sessionStartSrc, path.join(hooksDir, 'nexus-session-start.mjs'));
+
+    installHook(
+      'PostToolUse',
+      `node --experimental-sqlite "${path.join(hooksDir, 'nexus-post-tool-use.mjs')}"`,
+    );
+    installHook(
+      'SessionStart',
+      `node --experimental-sqlite "${path.join(hooksDir, 'nexus-session-start.mjs')}"`,
+    );
+  }
+
+  return { ok: true };
 }
 
 export function hookCommand(): Command {
@@ -79,6 +132,11 @@ export function hookCommand(): Command {
             return;
           }
 
+          // 0. Pipeline telemetry: hook started
+          if (!opts.dryRun) {
+            svc.emitPipelineEvent(project.id, 'pipeline.hook.start');
+          }
+
           // 1. Mark the project as seen
           if (!opts.dryRun) {
             svc.touchProject(project.id);
@@ -93,11 +151,30 @@ export function hookCommand(): Command {
               const { events } = await getSessionDetail(jsonlPath);
               const userTurns = events.filter((e) => e.type === 'user').length;
               if (userTurns >= 5) {
+                if (!opts.dryRun) {
+                  svc.emitPipelineEvent(project.id, 'pipeline.extraction.start');
+                }
                 const transcript = sessionToTranscript(events);
                 const existing = svc.getDecisionsForProject(project.id);
                 const extracted = await extractFromTranscript({ transcript, maxChars: 12000 });
+
+                // Log LLM cost for extraction call
+                if (!opts.dryRun && extracted.llmUsage) {
+                  const costUsd = estimateLlmCost(extracted.llmUsage);
+                  svc.emitPipelineEvent(project.id, 'pipeline.llm.call', {
+                    provider: extracted.llmUsage.provider,
+                    model: extracted.llmUsage.model ?? 'unknown',
+                    input_tokens: String(extracted.llmUsage.inputTokens ?? 0),
+                    output_tokens: String(extracted.llmUsage.outputTokens ?? 0),
+                    cost_usd: costUsd.toFixed(6),
+                    purpose: 'extraction',
+                  });
+                }
+
+                let extractedDecisions = 0;
+                let extractedPatterns = 0;
                 for (const d of extracted.decisions) {
-                  if (!opts.dryRun && !isLikelyDuplicate(d.summary, existing)) {
+                  if (!opts.dryRun && !isSimilarDecision(d.summary, existing)) {
                     svc.recordDecision({
                       projectId: project.id,
                       kind: d.kind,
@@ -105,89 +182,151 @@ export function hookCommand(): Command {
                       ...(d.rationale ? { rationale: d.rationale } : {}),
                       ...(opts.sessionId ? { sessionId: opts.sessionId } : {}),
                     }, 'daemon');
+                    extractedDecisions++;
                   }
                 }
+                const existingPatterns = svc.getPatternsForProject(project.id);
                 for (const p of extracted.patterns) {
                   if (!opts.dryRun) {
+                    // Skip if a similar pattern already exists (fuzzy match)
+                    if (isSimilarPattern(p.name, existingPatterns)) continue;
                     svc.upsertPattern(
                       { projectId: project.id, name: p.name, description: p.description, ...(p.examplePath ? { examplePath: p.examplePath } : {}) },
                       'daemon',
                     );
+                    extractedPatterns++;
                   }
                 }
+                if (!opts.dryRun) {
+                  svc.emitPipelineEvent(project.id, 'pipeline.extraction.success', {
+                    decision_count: String(extractedDecisions),
+                    pattern_count: String(extractedPatterns),
+                  });
+                }
+              } else {
+                if (!opts.dryRun) {
+                  svc.emitPipelineEvent(project.id, 'pipeline.hook.skip', {
+                    reason: `Only ${userTurns} user turn(s), need >= 5`,
+                  });
+                }
+              }
+            } else {
+              if (!opts.dryRun) {
+                svc.emitPipelineEvent(project.id, 'pipeline.hook.skip', {
+                  reason: 'No recent JSONL transcript found',
+                });
               }
             }
-          } catch {
+          } catch (extractErr) {
+            if (!opts.dryRun) {
+              svc.emitPipelineEvent(project.id, 'pipeline.extraction.fail', {
+                error: extractErr instanceof Error ? extractErr.message : 'Unknown error',
+              });
+            }
             // Never block session teardown
           }
-
-          const projectDecisions = svc.getDecisionsForProject(project.id);
-          const allProjects = svc.listProjects();
-          const { conflicts } = svc.checkConflicts([project.id]);
-          const otherProjects = allProjects.filter((p) => p.id !== project.id);
-          const relatedProjects = otherProjects
-            .filter((p) => p.parentId === project.id || project.parentId === p.id)
-            .map((p) => ({ name: p.name, path: p.path }));
-          const allNotesMap = otherProjects.map((p) => ({
-            projectName: p.name,
-            project: p,
-            notes: svc.getNotesForProject(p.id),
-          }));
-          const relatedProjectNotes = selectRelevantProjects(
-            { project, notes: svc.getNotesForProject(project.id) },
-            allNotesMap,
-          );
 
           // 3. Sync CLAUDE.md so notes/decisions are ready for the next session
           try {
             if (!opts.dryRun) {
-              const result = syncClaudeMd({
-                projectPath: project.path,
-                notes: svc.getNotesForProject(project.id),
-                relatedProjectNotes,
-                decisions: projectDecisions,
-                patterns: svc.getPatternsForProject(project.id),
-                preferences: svc.listPreferences(project.id),
-                conflicts: conflicts as Conflict[],
-                relatedProjects,
-              });
-              if (result.updated) {
+              svc.emitPipelineEvent(project.id, 'pipeline.sync.start');
+              const syncUpdated = svc.syncProject(project.id);
+              if (syncUpdated) {
                 output(`CLAUDE.md synced: ${project.name}`);
               }
             }
-          } catch {
+          } catch (syncErr) {
+            if (!opts.dryRun) {
+              svc.emitPipelineEvent(project.id, 'pipeline.sync.fail', {
+                error: syncErr instanceof Error ? syncErr.message : 'Unknown error',
+              });
+            }
             // Sync is best-effort — never block session teardown
           }
 
-          // 4. Conflict detection — compare this project's decisions against others
+          // 4. Portfolio-level conflict & advisory detection (single LLM call)
+          const projectDecisions = svc.getDecisionsForProject(project.id);
           if (projectDecisions.length === 0) return;
 
-          const conflictProjects = otherProjects
-            .filter((p) => svc.getDecisionsForProject(p.id).length > 0)
-            .sort((a, b) => (b.lastSeenAt ?? 0) - (a.lastSeenAt ?? 0)) // most-recently-active first
-            .slice(0, 5);
+          const allProjects = svc.listProjects();
+          const { conflicts } = svc.checkConflicts([project.id]);
+          const otherProjects = allProjects.filter((p) => p.id !== project.id);
 
-          await Promise.all(
-            conflictProjects.map(async (other) => {
-              const otherDecisions = svc.getDecisionsForProject(other.id);
-              try {
-                const newConflicts = await detectConflicts({
-                  projectA: { id: project.id, name: project.name, decisions: projectDecisions },
-                  projectB: { id: other.id, name: other.name, decisions: otherDecisions },
-                });
-                for (const conflict of newConflicts) {
-                  if (!opts.dryRun) {
-                    svc.recordConflict(conflict.projectIds, conflict.description, 'daemon');
-                  }
-                  if (!opts.quiet) {
-                    log.warn(`Conflict with ${other.name}: ${conflict.description}`);
-                  }
-                }
-              } catch {
-                // Conflict detection is best-effort — skip if auth unavailable
-              }
-            }),
+          const focusProject = {
+            id: project.id,
+            name: project.name,
+            decisions: projectDecisions,
+            parentId: project.parentId as string | undefined,
+            tags: project.tags as string[] | undefined,
+          };
+
+          // Build portfolio from ALL projects with decisions
+          const portfolioProjects = otherProjects
+            .map((p) => ({
+              id: p.id,
+              name: p.name,
+              decisions: svc.getDecisionsForProject(p.id),
+              parentId: p.parentId as string | undefined,
+              tags: p.tags as string[] | undefined,
+            }))
+            .filter((p) => p.decisions.length > 0);
+
+          if (portfolioProjects.length === 0) return;
+
+          // Load existing to deduplicate
+          const existingDescNorm = new Set(
+            conflicts.map((c: Conflict) =>
+              c.description.toLowerCase().replace(/[^a-z0-9]/g, '').slice(0, 80),
+            ),
           );
+
+          try {
+            const portfolioResult = await analyzePortfolio({
+              focusProject,
+              allProjects: portfolioProjects,
+            });
+
+            // Log LLM cost for portfolio analysis call
+            if (!opts.dryRun && portfolioResult.llmUsage) {
+              const costUsd = estimateLlmCost(portfolioResult.llmUsage);
+              svc.emitPipelineEvent(project.id, 'pipeline.llm.call', {
+                provider: portfolioResult.llmUsage.provider,
+                model: portfolioResult.llmUsage.model ?? 'unknown',
+                input_tokens: String(portfolioResult.llmUsage.inputTokens ?? 0),
+                output_tokens: String(portfolioResult.llmUsage.outputTokens ?? 0),
+                cost_usd: costUsd.toFixed(6),
+                purpose: 'portfolio_analysis',
+              });
+            }
+
+            for (const insight of portfolioResult.insights) {
+              const norm = insight.description
+                .toLowerCase()
+                .replace(/[^a-z0-9]/g, '')
+                .slice(0, 80);
+              if (existingDescNorm.has(norm)) continue;
+
+              if (!opts.dryRun) {
+                svc.recordInsight(
+                  insight.projectIds,
+                  insight.description,
+                  insight.tier,
+                  insight.severity,
+                  'daemon',
+                );
+              }
+              existingDescNorm.add(norm);
+              if (!opts.quiet) {
+                if (insight.tier === 'conflict') {
+                  log.warn(`Conflict: ${insight.description}`);
+                } else {
+                  log.info(`Advisory: ${insight.description}`);
+                }
+              }
+            }
+          } catch {
+            // Portfolio analysis is best-effort — skip if auth unavailable
+          }
         } catch (err) {
           if (!opts.quiet) {
             log.error(`Hook failed: ${err instanceof Error ? err.message : String(err)}`);
@@ -198,6 +337,30 @@ export function hookCommand(): Command {
         }
       },
     );
+
+  cmd
+    .command('install-session-tracking')
+    .description('Install standalone session tracking hooks for compaction recovery')
+    .option('--dry-run', 'Show what would happen without making changes')
+    .action((opts: { dryRun?: boolean }) => {
+      try {
+        const nexusRoot = path.resolve(import.meta.dirname, '..', '..', '..', '..');
+        const result = installSessionTrackingHooks(nexusRoot, opts.dryRun);
+        if (!result.ok) {
+          log.error(result.error ?? 'Failed to install session tracking hooks');
+          return;
+        }
+        log.info('Session tracking hooks installed:');
+        log.info('  PostToolUse  -> nexus-post-tool-use.mjs');
+        log.info('  SessionStart -> nexus-session-start.mjs');
+        log.info(`  Settings: ${getClaudeSettingsPath()}`);
+        if (opts.dryRun) {
+          log.dim('  (dry run — no changes made)');
+        }
+      } catch (err) {
+        log.error(`Failed to install hooks: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    });
 
   return cmd;
 }

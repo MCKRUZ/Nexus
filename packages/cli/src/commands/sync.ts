@@ -8,7 +8,6 @@
 import { Command } from 'commander';
 import path from 'node:path';
 import chalk from 'chalk';
-import { syncClaudeMd, selectRelevantProjects } from '@nexus/core';
 import { log } from '../lib/output.js';
 import { openService } from '../lib/service.js';
 
@@ -41,50 +40,21 @@ export function syncCommand(): Command {
         let updatedCount = 0;
 
         for (const project of projectsToSync) {
-          const decisions = svc.getDecisionsForProject(project.id);
-          const patterns = svc.getPatternsForProject(project.id);
-          const preferences = svc.listPreferences(project.id);
-          const { conflicts } = svc.checkConflicts([project.id]);
-
-          // Find related projects (children of this project or same parent)
-          const allProjects = svc.listProjects();
-          const otherProjects = allProjects.filter((p) => p.id !== project.id);
-          const relatedProjects = otherProjects
-            .filter((p) => p.parentId === project.id || project.parentId === p.id)
-            .map((p) => ({ name: p.name, path: p.path }));
-          const notes = svc.getNotesForProject(project.id);
-          const allNotesMap = otherProjects.map((p) => ({
-            projectName: p.name,
-            project: p,
-            notes: svc.getNotesForProject(p.id),
-          }));
-          const relatedProjectNotes = selectRelevantProjects(
-            { project, notes },
-            allNotesMap,
-          );
-
           if (opts.dryRun) {
+            const decisions = svc.getDecisionsForProject(project.id);
+            const notes = svc.getNotesForProject(project.id);
+            const { conflicts } = svc.checkConflicts([project.id]);
             log.info(`Would sync ${project.name}:`);
-            log.dim(`  ${decisions.length} decisions, ${patterns.length} patterns, ${preferences.length} preferences`);
+            log.dim(`  ${decisions.length} decisions, ${notes.length} notes`);
             if (conflicts.length > 0) log.warn(`  ${conflicts.length} open conflicts`);
             continue;
           }
 
-          const result = syncClaudeMd({
-            projectPath: project.path,
-            notes,
-            relatedProjectNotes,
-            decisions,
-            patterns,
-            preferences,
-            conflicts: conflicts as import('@nexus/core').Conflict[],
-            relatedProjects,
-          });
+          const updated = svc.syncProject(project.id);
 
-          if (result.updated) {
+          if (updated) {
             updatedCount++;
             log.success(`Synced: ${chalk.bold(project.name)}`);
-            log.dim(`  CLAUDE.md: ${result.claudeMdPath}`);
           } else {
             log.dim(`Up to date: ${project.name}`);
           }

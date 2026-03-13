@@ -88,7 +88,7 @@ export interface EfficiencyMetrics {
 
 // ─── Pricing (per million tokens) ────────────────────────────────────────────
 
-interface ModelPricing {
+export interface ModelPricing {
   input: number;
   cacheWrite: number;
   cacheRead: number;
@@ -112,7 +112,7 @@ const MODEL_PRICING: Record<string, ModelPricing> = {
 
 const DEFAULT_PRICING: ModelPricing = { input: 3, cacheWrite: 6, cacheRead: 0.3, output: 15 };
 
-function getPricing(model: string): ModelPricing {
+export function getPricing(model: string): ModelPricing {
   const exact = MODEL_PRICING[model];
   if (exact) return exact;
   // Fuzzy match
@@ -126,7 +126,7 @@ function getPricing(model: string): ModelPricing {
   return DEFAULT_PRICING;
 }
 
-function calculateCost(
+export function calculateCost(
   pricing: ModelPricing,
   input: number,
   cacheWrite: number,

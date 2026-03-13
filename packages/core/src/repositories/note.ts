@@ -3,6 +3,7 @@ import type { NexusDb } from '../db/connection.js';
 import type { Note } from '../types/index.js';
 import { auditLog } from './audit.js';
 import { filterSecrets } from '../security/secret-filter.js';
+import { sanitizePorterQuery, sanitizeTrigramQuery, searchWithFallback } from '../utils/fts.js';
 
 interface NoteRow {
   id: string;
@@ -48,21 +49,46 @@ export function findNoteByTitle(db: NexusDb, projectId: string, title: string): 
 }
 
 export function searchNotes(db: NexusDb, query: string, projectId?: string): Note[] {
-  const like = `%${query}%`;
-  const rows = (
-    projectId
-      ? db
-          .prepare(
-            'SELECT * FROM notes WHERE project_id = ? AND (title LIKE ? OR content LIKE ?) ORDER BY updated_at DESC LIMIT 20',
-          )
-          .all(projectId, like, like)
-      : db
-          .prepare(
-            'SELECT * FROM notes WHERE title LIKE ? OR content LIKE ? ORDER BY updated_at DESC LIMIT 20',
-          )
-          .all(like, like)
-  ) as NoteRow[];
-  return rows.map(rowToNote);
+  const ftsSearch = (table: string, ftsQuery: string): Note[] => {
+    if (!ftsQuery) return [];
+    const sql = projectId
+      ? `SELECT n.* FROM notes n
+         JOIN ${table} ON ${table}.entity_id = n.id
+         WHERE ${table} MATCH ? AND n.project_id = ?
+         ORDER BY bm25(${table}, 2.0, 1.0) LIMIT 20`
+      : `SELECT n.* FROM notes n
+         JOIN ${table} ON ${table}.entity_id = n.id
+         WHERE ${table} MATCH ?
+         ORDER BY bm25(${table}, 2.0, 1.0) LIMIT 20`;
+    const rows = (projectId
+      ? db.prepare(sql).all(ftsQuery, projectId)
+      : db.prepare(sql).all(ftsQuery)) as NoteRow[];
+    return rows.map(rowToNote);
+  };
+
+  /** Fallback: list all notes when FTS produces no usable query (e.g. "*", empty). */
+  const listAll = (): Note[] => {
+    const sql = projectId
+      ? 'SELECT * FROM notes WHERE project_id = ? ORDER BY updated_at DESC LIMIT 20'
+      : 'SELECT * FROM notes ORDER BY updated_at DESC LIMIT 20';
+    const rows = (projectId
+      ? db.prepare(sql).all(projectId)
+      : db.prepare(sql).all()) as NoteRow[];
+    return rows.map(rowToNote);
+  };
+
+  const porterAnd = sanitizePorterQuery(query, 'AND');
+  const porterOr = sanitizePorterQuery(query, 'OR');
+  const trigramAnd = sanitizeTrigramQuery(query, 'AND');
+  const trigramOr = sanitizeTrigramQuery(query, 'OR');
+
+  return searchWithFallback([
+    () => ftsSearch('notes_fts', porterAnd),
+    () => ftsSearch('notes_fts', porterOr),
+    () => ftsSearch('notes_trigram', trigramAnd),
+    () => ftsSearch('notes_trigram', trigramOr),
+    listAll,
+  ]);
 }
 
 export interface UpsertNoteParams {

@@ -11,6 +11,12 @@ export interface NexusConfig {
   version: number;
   encryptionKey: string; // TODO: migrate to OS keychain in a future release
   createdAt: number;
+  /** LLM provider for extraction pipeline. Default: 'anthropic' */
+  llmProvider?: 'openrouter' | 'anthropic' | 'ollama';
+  /** API key for OpenRouter. Falls back to OPENROUTER_API_KEY env var. */
+  openrouterApiKey?: string;
+  /** OpenRouter model ID. Default: 'anthropic/claude-haiku-4-5' */
+  openrouterModel?: string;
   /** API key for Anthropic / local proxy. Falls back to ANTHROPIC_API_KEY env var. */
   anthropicApiKey?: string;
   /**
@@ -19,6 +25,12 @@ export interface NexusConfig {
    * a placeholder key is used so the Anthropic SDK doesn't throw.
    */
   anthropicBaseUrl?: string;
+  /** Anthropic model ID. Default: 'claude-haiku-4-5-20251001' */
+  anthropicModel?: string;
+  /** Base URL for Ollama. Default: 'http://localhost:11434' */
+  ollamaBaseUrl?: string;
+  /** Ollama model name. Default: 'llama3.1:8b' */
+  ollamaModel?: string;
   langfuse?: {
     baseUrl: string;
     publicKey: string;
@@ -72,28 +84,30 @@ export interface AnthropicAuth {
  * Also resolves baseURL from ANTHROPIC_BASE_URL env var or anthropicBaseUrl in config.
  */
 export function resolveAnthropicAuth(): AnthropicAuth {
-  const baseURL =
-    process.env['ANTHROPIC_BASE_URL'] ??
-    (() => {
-      try { return readConfig().anthropicBaseUrl; } catch { return undefined; }
-    })();
+  // Only use a custom base URL if explicitly configured for Nexus.
+  // ANTHROPIC_BASE_URL env var is typically a Langfuse tracing proxy meant for
+  // Claude Code's own calls — Nexus's extraction calls should go direct.
+  const nexusBaseURL = (() => {
+    try { return readConfig().anthropicBaseUrl; } catch { return undefined; }
+  })();
 
-  // 1. Explicit API key in env
+  // 1. Explicit API key in env (use Nexus-specific base URL only, not env proxy)
   if (process.env['ANTHROPIC_API_KEY']) {
-    return { apiKey: process.env['ANTHROPIC_API_KEY'], ...(baseURL ? { baseURL } : {}) };
+    return { apiKey: process.env['ANTHROPIC_API_KEY'], ...(nexusBaseURL ? { baseURL: nexusBaseURL } : {}) };
   }
 
   // 2. API key in nexus config
   try {
     const cfg = readConfig();
     if (cfg.anthropicApiKey) {
-      return { apiKey: cfg.anthropicApiKey, ...(baseURL ? { baseURL } : {}) };
+      return { apiKey: cfg.anthropicApiKey, ...(nexusBaseURL ? { baseURL: nexusBaseURL } : {}) };
     }
   } catch {
     // config may not exist yet
   }
 
   // 3. Claude Code OAuth token (~/.claude/.credentials.json) — long-lived token, auto-managed by Claude Code
+  //    OAuth tokens go to the default Anthropic endpoint — never through a custom proxy.
   try {
     const credPath = path.join(os.homedir(), '.claude', '.credentials.json');
     if (fs.existsSync(credPath)) {
@@ -103,14 +117,14 @@ export function resolveAnthropicAuth(): AnthropicAuth {
       const token = creds.claudeAiOauth?.accessToken;
       const expiresAt = creds.claudeAiOauth?.expiresAt ?? 0;
       if (token && Date.now() < expiresAt) {
-        return { authToken: token, ...(baseURL ? { baseURL } : {}) };
+        return { authToken: token };
       }
     }
   } catch {
     // credentials file may not exist or be malformed
   }
 
-  return { ...(baseURL ? { baseURL } : {}) };
+  return { ...(nexusBaseURL ? { baseURL: nexusBaseURL } : {}) };
 }
 
 /** @deprecated Use resolveAnthropicAuth() */
@@ -119,12 +133,11 @@ export function resolveAnthropicApiKey(): string | undefined {
 }
 
 /**
- * Resolves the Anthropic base URL in priority order:
- *   1. ANTHROPIC_BASE_URL env var
- *   2. anthropicBaseUrl field in ~/.nexus/config.json
+ * Resolves the Anthropic base URL for Nexus-specific calls.
+ * Only reads from Nexus config — ignores ANTHROPIC_BASE_URL env var
+ * (which is typically a Langfuse tracing proxy for Claude Code, not for Nexus).
  */
 export function resolveAnthropicBaseUrl(): string | undefined {
-  if (process.env['ANTHROPIC_BASE_URL']) return process.env['ANTHROPIC_BASE_URL'];
   try {
     const cfg = readConfig();
     if (cfg.anthropicBaseUrl) return cfg.anthropicBaseUrl;

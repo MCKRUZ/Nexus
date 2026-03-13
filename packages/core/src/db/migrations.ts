@@ -87,6 +87,121 @@ const MIGRATIONS: Array<{ version: number; up: string }> = [
       CREATE INDEX IF NOT EXISTS idx_notes_updated ON notes(updated_at);
     `,
   },
+  {
+    version: 3,
+    up: `
+      -- FTS5 porter tables (ranked full-text search)
+      CREATE VIRTUAL TABLE IF NOT EXISTS decisions_fts USING fts5(
+        summary, rationale, entity_id UNINDEXED,
+        tokenize='porter unicode61'
+      );
+      CREATE VIRTUAL TABLE IF NOT EXISTS patterns_fts USING fts5(
+        name, description, entity_id UNINDEXED,
+        tokenize='porter unicode61'
+      );
+      CREATE VIRTUAL TABLE IF NOT EXISTS notes_fts USING fts5(
+        title, content, entity_id UNINDEXED,
+        tokenize='porter unicode61'
+      );
+
+      -- FTS5 trigram tables (fuzzy/substring search fallback)
+      CREATE VIRTUAL TABLE IF NOT EXISTS decisions_trigram USING fts5(
+        summary, rationale, entity_id UNINDEXED,
+        tokenize='trigram'
+      );
+      CREATE VIRTUAL TABLE IF NOT EXISTS patterns_trigram USING fts5(
+        name, description, entity_id UNINDEXED,
+        tokenize='trigram'
+      );
+      CREATE VIRTUAL TABLE IF NOT EXISTS notes_trigram USING fts5(
+        title, content, entity_id UNINDEXED,
+        tokenize='trigram'
+      );
+
+      -- Sync triggers: decisions
+      CREATE TRIGGER IF NOT EXISTS decisions_ai AFTER INSERT ON decisions BEGIN
+        INSERT INTO decisions_fts(summary, rationale, entity_id)
+          VALUES (NEW.summary, COALESCE(NEW.rationale, ''), NEW.id);
+        INSERT INTO decisions_trigram(summary, rationale, entity_id)
+          VALUES (NEW.summary, COALESCE(NEW.rationale, ''), NEW.id);
+      END;
+      CREATE TRIGGER IF NOT EXISTS decisions_au AFTER UPDATE ON decisions BEGIN
+        DELETE FROM decisions_fts WHERE entity_id = OLD.id;
+        DELETE FROM decisions_trigram WHERE entity_id = OLD.id;
+        INSERT INTO decisions_fts(summary, rationale, entity_id)
+          VALUES (NEW.summary, COALESCE(NEW.rationale, ''), NEW.id);
+        INSERT INTO decisions_trigram(summary, rationale, entity_id)
+          VALUES (NEW.summary, COALESCE(NEW.rationale, ''), NEW.id);
+      END;
+      CREATE TRIGGER IF NOT EXISTS decisions_ad AFTER DELETE ON decisions BEGIN
+        DELETE FROM decisions_fts WHERE entity_id = OLD.id;
+        DELETE FROM decisions_trigram WHERE entity_id = OLD.id;
+      END;
+
+      -- Sync triggers: patterns
+      CREATE TRIGGER IF NOT EXISTS patterns_ai AFTER INSERT ON patterns BEGIN
+        INSERT INTO patterns_fts(name, description, entity_id)
+          VALUES (NEW.name, NEW.description, NEW.id);
+        INSERT INTO patterns_trigram(name, description, entity_id)
+          VALUES (NEW.name, NEW.description, NEW.id);
+      END;
+      CREATE TRIGGER IF NOT EXISTS patterns_au AFTER UPDATE ON patterns BEGIN
+        DELETE FROM patterns_fts WHERE entity_id = OLD.id;
+        DELETE FROM patterns_trigram WHERE entity_id = OLD.id;
+        INSERT INTO patterns_fts(name, description, entity_id)
+          VALUES (NEW.name, NEW.description, NEW.id);
+        INSERT INTO patterns_trigram(name, description, entity_id)
+          VALUES (NEW.name, NEW.description, NEW.id);
+      END;
+      CREATE TRIGGER IF NOT EXISTS patterns_ad AFTER DELETE ON patterns BEGIN
+        DELETE FROM patterns_fts WHERE entity_id = OLD.id;
+        DELETE FROM patterns_trigram WHERE entity_id = OLD.id;
+      END;
+
+      -- Sync triggers: notes
+      CREATE TRIGGER IF NOT EXISTS notes_ai AFTER INSERT ON notes BEGIN
+        INSERT INTO notes_fts(title, content, entity_id)
+          VALUES (NEW.title, NEW.content, NEW.id);
+        INSERT INTO notes_trigram(title, content, entity_id)
+          VALUES (NEW.title, NEW.content, NEW.id);
+      END;
+      CREATE TRIGGER IF NOT EXISTS notes_au AFTER UPDATE ON notes BEGIN
+        DELETE FROM notes_fts WHERE entity_id = OLD.id;
+        DELETE FROM notes_trigram WHERE entity_id = OLD.id;
+        INSERT INTO notes_fts(title, content, entity_id)
+          VALUES (NEW.title, NEW.content, NEW.id);
+        INSERT INTO notes_trigram(title, content, entity_id)
+          VALUES (NEW.title, NEW.content, NEW.id);
+      END;
+      CREATE TRIGGER IF NOT EXISTS notes_ad AFTER DELETE ON notes BEGIN
+        DELETE FROM notes_fts WHERE entity_id = OLD.id;
+        DELETE FROM notes_trigram WHERE entity_id = OLD.id;
+      END;
+
+      -- Backfill existing data into FTS tables
+      INSERT INTO decisions_fts(summary, rationale, entity_id)
+        SELECT summary, COALESCE(rationale, ''), id FROM decisions;
+      INSERT INTO decisions_trigram(summary, rationale, entity_id)
+        SELECT summary, COALESCE(rationale, ''), id FROM decisions;
+
+      INSERT INTO patterns_fts(name, description, entity_id)
+        SELECT name, description, id FROM patterns;
+      INSERT INTO patterns_trigram(name, description, entity_id)
+        SELECT name, description, id FROM patterns;
+
+      INSERT INTO notes_fts(title, content, entity_id)
+        SELECT title, content, id FROM notes;
+      INSERT INTO notes_trigram(title, content, entity_id)
+        SELECT title, content, id FROM notes;
+    `,
+  },
+  {
+    version: 4,
+    up: `
+      ALTER TABLE conflicts ADD COLUMN tier TEXT NOT NULL DEFAULT 'conflict' CHECK(tier IN ('advisory', 'conflict'));
+      ALTER TABLE conflicts ADD COLUMN severity TEXT NOT NULL DEFAULT 'medium' CHECK(severity IN ('critical', 'high', 'medium', 'low', 'info'));
+    `,
+  },
 ];
 
 export function migrateDatabase(db: NexusDb): void {

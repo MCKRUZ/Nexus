@@ -9,6 +9,9 @@ import { hookCommand } from './commands/hook.js';
 import { syncCommand } from './commands/sync.js';
 import { serveCommand } from './commands/serve.js';
 import { installMemoryRuleCommand } from './commands/install-memory-rule.js';
+import { doctorCommand } from './commands/doctor.js';
+import { backfillCommand } from './commands/backfill.js';
+import { patternCommand } from './commands/pattern.js';
 
 const program = new Command();
 
@@ -26,6 +29,9 @@ program.addCommand(hookCommand());
 program.addCommand(syncCommand());
 program.addCommand(serveCommand());
 program.addCommand(installMemoryRuleCommand());
+program.addCommand(doctorCommand());
+program.addCommand(backfillCommand());
+program.addCommand(patternCommand());
 
 program.parseAsync(process.argv).catch((err: unknown) => {
   console.error(err instanceof Error ? err.message : err);

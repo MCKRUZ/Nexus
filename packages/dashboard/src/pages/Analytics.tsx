@@ -1,9 +1,20 @@
 import { useEffect, useState, useMemo, useCallback } from 'react';
 import { api, type SessionAnalytics, type AuditCountByDay } from '../api.js';
 
-type Range = '7d' | '30d' | '90d' | 'all';
+type Range = '1h' | '5h' | '1d' | '7d' | '30d' | '90d' | 'all';
 
-const RANGE_DAYS: Record<Range, number> = { '7d': 7, '30d': 30, '90d': 90, all: 365 };
+const RANGE_DAYS: Record<Range, number> = { '1h': 1, '5h': 1, '1d': 1, '7d': 7, '30d': 30, '90d': 90, all: 365 };
+
+function cutoffForRange(range: Range): number {
+  const now = Date.now();
+  if (range === '1h') return now - 3600000;
+  if (range === '5h') return now - 5 * 3600000;
+  if (range === '1d') return now - 86400000;
+  if (range === '7d') return now - 7 * 86400000;
+  if (range === '30d') return now - 30 * 86400000;
+  if (range === '90d') return now - 90 * 86400000;
+  return 0;
+}
 
 function relativeTime(ts: string): string {
   const diff = Date.now() - new Date(ts).getTime();
@@ -403,13 +414,13 @@ export function Analytics() {
       {/* ── Filter bar ──────────────────────────────────────────────────────── */}
       <div className="filter-bar">
         <div className="range-btns">
-          {(['7d', '30d', '90d', 'all'] as Range[]).map((r) => (
+          {(['1h', '5h', '1d', '7d', '30d', '90d', 'all'] as Range[]).map((r) => (
             <button
               key={r}
               className={`range-btn${range === r ? ' active' : ''}`}
               onClick={() => setRange(r)}
             >
-              {r === 'all' ? 'All time' : r}
+              {r === 'all' ? 'All time' : r === '1h' ? '1h' : r === '5h' ? '5h' : r === '1d' ? '1d' : r}
             </button>
           ))}
         </div>

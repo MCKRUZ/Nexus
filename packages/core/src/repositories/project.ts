@@ -3,6 +3,11 @@ import type { NexusDb } from '../db/connection.js';
 import type { Project } from '../types/index.js';
 import { auditLog } from './audit.js';
 
+/** Normalize paths to forward slashes for consistent cross-platform matching. */
+export function normalizePath(p: string): string {
+  return p.replace(/\\/g, '/');
+}
+
 interface ProjectRow {
   id: string;
   name: string;
@@ -33,9 +38,10 @@ export function findAllProjects(db: NexusDb): Project[] {
 }
 
 export function findProjectByPath(db: NexusDb, projectPath: string): Project | undefined {
+  const normalized = normalizePath(projectPath);
   const row = db
     .prepare('SELECT * FROM projects WHERE path = ?')
-    .get(projectPath) as ProjectRow | undefined;
+    .get(normalized) as ProjectRow | undefined;
   return row ? rowToProject(row) : undefined;
 }
 
@@ -73,7 +79,7 @@ export function createProject(
   ).run(
     project.id,
     project.name,
-    project.path,
+    normalizePath(project.path),
     project.registeredAt,
     project.parentId ?? null,
     JSON.stringify(project.tags),
@@ -94,7 +100,8 @@ export function removeProject(
   projectPath: string,
   source: 'cli' | 'mcp' | 'daemon' = 'cli',
 ): boolean {
-  const existing = findProjectByPath(db, projectPath);
+  const normalized = normalizePath(projectPath);
+  const existing = findProjectByPath(db, normalized);
   if (!existing) return false;
 
   // Audit BEFORE delete so the FK is still valid
@@ -102,12 +109,28 @@ export function removeProject(
     operation: 'project.remove',
     source,
     projectId: existing.id,
-    meta: { path: projectPath },
+    meta: { path: normalized },
   });
 
-  db.prepare('DELETE FROM projects WHERE path = ?').run(projectPath);
+  db.prepare('DELETE FROM projects WHERE path = ?').run(normalized);
 
   return true;
+}
+
+export function updateProjectParentId(
+  db: NexusDb,
+  projectId: string,
+  parentId: string,
+  source: 'cli' | 'mcp' | 'daemon' = 'cli',
+): void {
+  auditLog(db, {
+    operation: 'project.link',
+    source,
+    projectId,
+    meta: { parentId },
+  });
+
+  db.prepare('UPDATE projects SET parent_id = ? WHERE id = ?').run(parentId, projectId);
 }
 
 export function touchProject(db: NexusDb, id: string): void {

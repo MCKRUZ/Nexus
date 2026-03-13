@@ -51,10 +51,12 @@ After changes: `pnpm build && pnpm test`
 
 ### Token Budget (NON-NEGOTIABLE)
 - CLAUDE.md Nexus section: hard cap **1,500 tokens** (6,000 chars) — enforced in `generateSection()`
+- Structure: Portfolio map → Own-project notes → Decisions → Active conflicts → Behavioral rule
+- Portfolio map: one line per project, description ≤ 80 chars from "Project Overview" note
 - Decisions: 5 max injected, each summary ≤ 80 chars
-- Notes: 150 chars own project, 80 chars cross-project
+- Own-project notes: 150 chars (excludes "Project Overview" — already in portfolio map)
+- Behavioral rule: teaches Claude to run `nexus_query` before cross-project decisions
 - Principle: CLAUDE.md = headlines. Full detail lives in the DB. Use `nexus query` to surface it.
-- Never inject raw content when a title + count achieves the same recall signal
 
 ### MCP Tool Naming
 All MCP tools use the `nexus_` prefix: `nexus_query`, `nexus_decide`, `nexus_pattern`, `nexus_record_pattern`, `nexus_check_conflicts`, `nexus_dependencies`, `nexus_preferences`, `nexus_note`
@@ -122,93 +124,71 @@ When compacting, preserve:
 ## Nexus Intelligence
 
 *Auto-updated by Nexus — do not edit this section manually.*
-*Last sync: 2026-03-10*
+*Last sync: 2026-03-13*
+
+### Portfolio
+| Project | Description | Tech |
+|---------|------------|------|
+| code | Pinokio plugin — a VS Code-like code editor plugin running inside the Pinokio A… | — |
+| app | **Qwen3-TTS** — a Gradio web UI for Alibaba's Qwen3-TTS text-to-speech models, … | — |
+| kohya_ss | **Kohya's GUI** — the standard GUI/CLI for training Stable Diffusion models inc… | — |
+| ComfyUI | **ComfyUI** — the main local ComfyUI installation at E:/ComfyUI-Easy-Install/Co… | — |
+| openclaw | **OpenClaw** — a personal AI assistant platform you run on your own devices, an… | — |
+| eShopLite | **eShopLite** — Microsoft reference .NET application implementing an eCommerce … | — |
+| agent-framework | **Microsoft Agent Framework** — comprehensive multi-language framework for buil… | — |
+| Agent365-dotnet | **Microsoft Agent 365 SDK** — C#/.NET SDK that extends the Microsoft 365 Agents… | — |
+| firecrawl | **Firecrawl** — a web scraper API that takes URLs, crawls them, and converts co… | — |
+| ai-toolkit | **AI Toolkit by Ostris** — all-in-one training suite for diffusion models (imag… | — |
+| musubi-tuner | **Musubi Tuner** — LoRA training scripts for modern video and image diffusion a… | — |
+| ComfyUI-Qwen-TTS | **ComfyUI-Qwen-TTS** — ComfyUI custom nodes for speech synthesis using Alibaba'… | — |
+| claude-code-langfuse-template | **Claude Code + Langfuse Template** — production-ready setup for observing Clau… | — |
+| fluxgym | **Flux Gym** — simple web UI for training FLUX LoRAs with low VRAM support (12G… | — |
+| everything-claude-code | **Everything Claude Code** — complete collection of Claude Code configs from an… | — |
+| awesome-claude-skills | **Awesome Claude Skills** — curated list of practical Claude Skills for Claude.… | — |
+| clawd | **clawd** — local installation of the Claude Code CLI tool at C:/Users/kruz7/cl… | — |
+| sage-voice | **sage-voice** — MCKRUZ project for Sage's voice capabilities.
+
+Sage is the AI … | — |
+| sage-voice-bridge | **sage-voice-bridge** — bridge service connecting Sage's voice system to the br… | — |
+| openclaw-voice | **OpenClaw Voice** — Discord voice bot enabling AI agents (Jarvis and Sage) to … | — |
+| openclaw-realism | **OpenClaw Realism** — framework/blueprint for making OpenClaw agents feel like… | — |
+| openclaw-langfuse | **openclaw-langfuse** — OpenClaw plugin for sending agent traces to Langfuse fo… | — |
+| matthewkruczek-ai | **matthewkruczek.ai** — static personal brand website for Matthew Kruczek (EY M… | — |
+| jarvis-voice-bridge | **jarvis-voice-bridge** — bridge service for Jarvis agent's voice integration.
+… | — |
+| github-agentic-workflows-poc | **GitHub Agentic Workflows POC** — proof-of-concept for GitHub's Agentic Workfl… | — |
+| claude-code-mastery | **Claude Code Mastery** — the definitive Claude Code setup and configuration sk… | — |
+| TeamsBuddy | **TeamsBuddy** — real-time Microsoft Teams meeting transcript monitor with AI-p… | — |
+| SocialMedia | **SocialMedia** — MCKRUZ social media project.
+
+No documentation files found in… | — |
+| ProjectPrism | **Prismcast / ProjectPrism** — autonomous AI news aggregation, synthesis, and v… | — |
+| Microsoft-Agent-Skills-POC | **Microsoft Agent Skills POC** — proof-of-concept for building Agent Skills for… | — |
+| DotNetSkills | **DotNetSkills / Skills Executor** — .NET orchestrator for executing Anthropic-… | — |
+| ComfyUI Expert | **VideoAgent / ComfyUI Expert** — session-scoped Claude Code orchestrator that … | — |
+| CodeReviewAssistant | **CodeReviewAssistant** — MCP server for capturing, analyzing, and documenting … | — |
+| ArchitectureHelper | **AzureCraft / ArchitectureHelper** — AI-native Azure infrastructure designer f… | — |
+| AI-SDLC | **AI-PDLC Platform** — multi-offering system for AI-assisted consulting and sof… | — |
+| **Nexus** (this) | Nexus is a local-first cross-project intelligence layer for Claude Code. | — |
 
 ### Project Context
 #### OpenClaw Ollama Fallback & Stop Hook JSON Validation Fix
-(1) OpenClaw agent fallback chain requires tool-capable models; dolphin-llama3 doesn't support tools so was removed; llama3.1:8b being pulled as Ollama fallback replacement. (2) Stop hook JSON validation error caused by prompt hooks trying to call MCP tools directly instead of returning evaluator format {ok: true/false, reason: string}. (3) All 7 Stop hooks tested—the two prompt hooks now properly instruct main Claude via reason field instead of attempting MCP calls.
+(1) OpenClaw agent fallback chain requires tool-capable models; dolphin-llama3 doesn't support tools so was removed; llama3.1:8b being pulled as Olla…
 *Tags: openclaw, ollama, hooks, bug-fix*
 
-#### Project Overview
-Nexus is a local-first cross-project intelligence layer for Claude Code.
-*Tags: context, overview*
-
-### Context from openclaw
-#### OpenClaw Ollama Integration & Stop Hook Architecture
-(1) OpenClaw uses agent model fallback chains requiring tool-capable models (Claude Opus/Sonnet, llama3.1:8b); (2) Two separate Ollama patterns: OpenClaw agent fallback (requires tools) vs Sage direct NSFW routing via curl (any model); (3) OpenClaw auth-profiles.json has three critical sections (version, profiles, lastGood) - missing lastGood entries cause No API key found errors even when profile exists; (4) Claude Code Stop hooks: prompt-type hooks are single-turn evaluators that cannot call MCP tools - use {ok: false, reason: call mcp__tool} pattern to instruct main Claude instead; (5) llama3.1:8b (4.9GB) downloaded on Furious and configured as Ollama fallback in openclaw.json.
-
-#### Project Overview
-**OpenClaw** — a personal AI assistant platform you run on your own devices, answering across channels you already use.
-
-**Stack:** Node.js 22+, npm global install (`npm install -g openclaw@latest`).
-
-**Supported channels:** WhatsApp, Telegram, Slack, Discord, Google Chat, Signal, iMessage, Microsoft Teams, WebChat, BlueBubbles, Matrix, Zalo. Voice on macOS/iOS/Android. Live Canvas UI.
-
-**Recommended model:** Anthropic Pro/Max with Claude Opus 4.6 for long-context strength and prompt-injection resistance.
-
-**Key commands:**
-- `openclaw onboard --install-daemon` — initial setup
-- `openclaw gateway --port 18789 --verbose` — start gateway
-- `openclaw agent --message "..." --thinking high` — run agent
-
-**Architecture note:** Personal, single-user assistant. The openclaw directory under openclaw/openclaw is the main repo. Related projects in this portfolio: openclaw-voice (Discord voice bot), openclaw-realism (personhood framework), openclaw-langfuse (observability plugin).
-*Tags: overview, typescript, claude, mckruz-project*
-
-### Context from claude-code-langfuse-template
-#### Project Overview
-**Claude Code + Langfuse Template** — production-ready setup for observing Claude Code sessions using self-hosted Langfuse.
-
-**Stack:** Docker + Docker Compose (Langfuse at localhost:3050), Python 3.11+, Claude Code CLI hooks.
-
-**What it captures:** Every Claude Code conversation — prompts, responses, tool calls, session grouping, incremental state management.
-
-**Setup:** `docker compose up -d` → install hook via `./scripts/install-hook.sh` → sessions appear in Langfuse dashboard.
-
-**Requirements:** Docker, Python 3.11+, Claude Code CLI, 4-6GB RAM.
-
-**Note:** Template/reference project. The portfolio also has openclaw-langfuse (for OpenClaw observability) and the Nexus project itself integrates with Langfuse via ~/.nexus/config.json.
-*Tags: overview, claude, typescript*
-
-### Context from openclaw-langfuse
-#### Project Overview
-**openclaw-langfuse** — OpenClaw plugin for sending agent traces to Langfuse for LLM observability.
-
-**Stack:** Node.js, no npm packages — uses Langfuse REST API directly via native `fetch`. No Docker rebuild needed — drop into workspace volume and restart.
-
-**What it records per turn:**
-- Trace name: `openclaw-turn`
-- Session ID, User ID (agent ID), Tags, Input/Output, Token usage, Duration
-
-**Install:** Copy plugin to `.openclaw/extensions/` in workspace volume and restart.
-
-**Compatibility:** Works with self-hosted Langfuse (bablyon NAS: langfuse.bablyon.synology.me) and Langfuse Cloud.
-
-**Note:** Nexus also integrates Langfuse via config.json for cross-project intelligence tracing.
-*Tags: overview, mckruz-project, typescript*
-
-### Context from DotNetSkills
-#### Project Overview
-**DotNetSkills / Skills Executor** — .NET orchestrator for executing Anthropic-style SKILL.md files with Azure OpenAI and MCP tool support.
-
-**Stack:** C#/.NET, Azure OpenAI (function calling), MCP client.
-
-**What it does:**
-1. Parses SKILL.md files (YAML frontmatter + Markdown body)
-2. Connects to MCP servers as a client to discover and execute tools
-3. Orchestrates Azure OpenAI calls in an agentic loop
-4. Bridges Azure OpenAI tool calls → MCP server execution
-
-**Project structure:** SkillsCore (shared: ISkillLoader, SkillLoaderService), SkillsQuickstart (main orchestrator with skills/ directory).
-
-**Included skills:** code-explainer, project-analyzer, github-assistant.
-
-**Relationship to portfolio:** Demonstrates the same skills-first pattern used in AI-SDLC and Microsoft-Agent-Skills-POC but in a minimal, standalone .NET form.
-*Tags: overview, dotnet, claude*
-
 ### Recorded Decisions
-- **[architecture]** Use pnpm workspaces for monorepo structure
-  > Better performance than npm, native workspace linking
-- **[library]** Use better-sqlite3 with SQLCipher for encrypted local storage
-  > SQLCipher is battle-tested encryption for SQLite
+- **[security]** Add database-level CHECK constraints on tier and severity enum columns
+  > Enforce valid values at storage layer to prevent invalid state propagation
+- **[security]** Add dismissal tracking via `dismissAdvisory(db, id, source)` setting resolved_a…
+  > Allows users to dismiss non-actionable advisories while preserving dismissal history (source/timestamp) for debugging false positive patterns and improving LLM prompt calibration.
+- **[security]** Validate project relationships through explicit parent/child/sibling/tag links …
+  > Reduces attack surface and prevents spurious detections by scoping comparison scope to semantically related projects only
+- **[security]** Add severity field to Conflict type for prioritized display of architecture vio…
+  > Enables filtering/sorting by impact level; distinguishes critical issues from minor inconsistencies in UI display
+- **[security]** Use taskkill /F for forceful process termination without waiting for graceful s…
+  > Installer must ensure clean file access; graceful shutdown unnecessary for pre-install cleanup
 
+> **Cross-project rule**: Before making decisions that affect shared concerns (APIs, auth, data formats, deployment), run `nexus_query` to check for existing decisions and conflicts across the portfolio.
+
+*[Nexus: run `nexus query` to search full knowledge base]*
 <!-- nexus:end -->

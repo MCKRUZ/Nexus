@@ -15,7 +15,7 @@ import {
 } from '../api.js';
 
 type Tab = 'overview' | 'native' | 'traces' | 'observations' | 'users';
-type Range = '7d' | '30d' | '90d';
+type Range = '1h' | '5h' | '1d' | '7d' | '30d' | '90d';
 type SortDir = 'asc' | 'desc' | null;
 type SessionSortKey = 'lastActivity' | 'traces' | 'cost' | 'avgLatency' | 'duration';
 type TracesSortKey = 'timestamp' | 'latency' | 'cost';
@@ -1045,7 +1045,7 @@ function OverviewTab({ langfuseConfigured }: { langfuseConfigured: boolean }) {
     setRefreshing(true);
     setLfError('');
     try {
-      const days = range === '7d' ? 7 : range === '30d' ? 30 : 90;
+      const days = range === '1h' ? 1 : range === '5h' ? 1 : range === '1d' ? 1 : range === '7d' ? 7 : range === '30d' ? 30 : 90;
       const [mResult, tResult, scResult] = await Promise.allSettled([
         api.langfuse.metrics(days),
         api.langfuse.traces(50),
@@ -1098,8 +1098,8 @@ function OverviewTab({ langfuseConfigured }: { langfuseConfigured: boolean }) {
         <>
           <div className="filter-bar">
             <div className="range-btns" role="group" aria-label="Time range">
-              {(['7d', '30d', '90d'] as Range[]).map(r => (
-                <button key={r} className={`range-btn${range === r ? ' active' : ''}`} onClick={() => setRange(r)} aria-pressed={range === r}>{r}</button>
+              {(['1h', '5h', '1d', '7d', '30d', '90d'] as Range[]).map(r => (
+                <button key={r} className={`range-btn${range === r ? ' active' : ''}`} onClick={() => setRange(r)} aria-pressed={range === r}>{r === '1h' ? '1h' : r === '5h' ? '5h' : r === '1d' ? '1d' : r}</button>
               ))}
             </div>
             <button className="btn" onClick={load} disabled={refreshing} aria-label="Refresh data" style={{ marginLeft: 'auto' }}>
@@ -2304,7 +2304,7 @@ export function Observability() {
   const [langfuseConfigured, setLangfuseConfigured] = useState<boolean>(false);
 
   useEffect(() => {
-    api.langfuse.status().then(s => setLangfuseConfigured(s.configured)).catch(() => setLangfuseConfigured(false));
+    api.langfuse.status().then(s => setLangfuseConfigured(s.configured && (s as { reachable?: boolean }).reachable !== false)).catch(() => setLangfuseConfigured(false));
   }, []);
 
   return (

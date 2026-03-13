@@ -49,6 +49,8 @@ export interface Conflict {
   id: string;
   projectIds: string[];
   description: string;
+  tier: 'advisory' | 'conflict';
+  severity: 'critical' | 'high' | 'medium' | 'low' | 'info';
   detectedAt: number;
   resolvedAt?: number;
   resolution?: string;
@@ -81,6 +83,7 @@ export interface QueryResult {
 export interface ConflictCheck {
   hasConflicts: boolean;
   conflicts: Conflict[];
+  advisories: Conflict[];
   potentialConflicts: Array<{ topic: string; description: string }>;
 }
 
@@ -389,6 +392,148 @@ export interface ContextOverhead {
   suggestions: OptimizationSuggestion[];
 }
 
+// ─── Session Token Detail types ──────────────────────────────────────────────
+
+export type MessageSource =
+  | 'system_context'
+  | 'hook_injection'
+  | 'user_message'
+  | 'tool_result'
+  | 'assistant_text'
+  | 'assistant_tool'
+  | 'assistant_mixed';
+
+export interface TimelineMessage {
+  index: number;
+  timestamp: string;
+  role: 'user' | 'assistant';
+  source: MessageSource;
+  summary: string;
+  toolNames?: string[];
+  tokens?: {
+    inputTokens: number;
+    outputTokens: number;
+    cacheWriteTokens: number;
+    cacheReadTokens: number;
+    costUsd: number;
+    cacheHitPct: number;
+    inputDelta: number;
+  };
+  model?: string;
+}
+
+export interface SessionTokenDetail {
+  sessionId: string;
+  cwd: string;
+  startedAt: string;
+  lastActivityAt: string;
+  durationMs: number;
+  userTurns: number;
+  toolCalls: number;
+  timeline: TimelineMessage[];
+  sourceBreakdown: Array<{
+    source: MessageSource;
+    count: number;
+    estimatedTokens: number;
+    pctOfInput: number;
+  }>;
+  totals: {
+    inputTokens: number;
+    outputTokens: number;
+    cacheWriteTokens: number;
+    cacheReadTokens: number;
+    costUsd: number;
+    cacheSavingsUsd: number;
+    cacheHitRate: number;
+    hypotheticalCostWithoutCache: number;
+  };
+  models: Array<{ model: string; requests: number; costUsd: number }>;
+}
+
+// ─── Session Tracking types ─────────────────────────────────────────────────
+
+export interface TrackedSession {
+  session_id: string;
+  project_dir: string | null;
+  started_at: number | null;
+  last_event: number | null;
+  event_count: number;
+  compact_count: number;
+}
+
+export interface SessionEvent {
+  id: number;
+  type: string;
+  category: string;
+  priority: number;
+  data: string;
+  source: string;
+  created_at: number;
+}
+
+// ─── Health / Diagnostics types ─────────────────────────────────────────────
+
+export interface DoctorCheck {
+  name: string;
+  status: 'pass' | 'warn' | 'fail';
+  message: string;
+}
+
+export interface ProjectHealth {
+  projectId: string;
+  projectName: string;
+  coverageScore: number;
+  lastSyncAge: number | null;
+  noteCount: number;
+  decisionCount: number;
+  patternCount: number;
+  gaps: string[];
+}
+
+export interface DoctorReport {
+  overall: 'healthy' | 'degraded' | 'failing';
+  checks: DoctorCheck[];
+  projects: ProjectHealth[];
+}
+
+export interface DoctorFixResult {
+  linkedFamilies: Array<{ rootName: string; children: string[] }>;
+  syncedProjects: string[];
+  skippedProjects: string[];
+}
+
+export interface PipelineStats {
+  hookRuns: number;
+  hookSkips: number;
+  extractionSuccesses: number;
+  extractionFailures: number;
+  syncSuccesses: number;
+  syncFailures: number;
+  lastRun: string | null;
+  avgExtractedItems: number;
+}
+
+// ─── Nexus LLM Cost types ───────────────────────────────────────────────────
+
+export interface LlmCostByDay {
+  date: string;
+  provider: string;
+  model: string;
+  calls: number;
+  inputTokens: number;
+  outputTokens: number;
+  estimatedCostUsd: number;
+}
+
+export interface LlmCostSummary {
+  totalCostUsd: number;
+  totalCalls: number;
+  totalInputTokens: number;
+  totalOutputTokens: number;
+  byDay: LlmCostByDay[];
+  byProvider: Array<{ provider: string; model: string; calls: number; costUsd: number }>;
+}
+
 async function get<T>(path: string): Promise<T> {
   const res = await fetch(BASE + path);
   if (!res.ok) {
@@ -398,6 +543,10 @@ async function get<T>(path: string): Promise<T> {
       if (body.error) msg = body.error;
     } catch { /* ignore */ }
     throw new Error(msg);
+  }
+  const ct = res.headers.get('content-type') ?? '';
+  if (!ct.includes('application/json')) {
+    throw new Error(`GET ${path} → unexpected content-type: ${ct}`);
   }
   return res.json() as Promise<T>;
 }
@@ -421,7 +570,18 @@ async function post<T>(path: string, body: unknown): Promise<T> {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
   });
-  if (!res.ok) throw new Error(`POST ${path} → ${res.status}`);
+  if (!res.ok) {
+    let msg = `POST ${path} → ${res.status}`;
+    try {
+      const errBody = await res.json() as { error?: string };
+      if (errBody.error) msg = errBody.error;
+    } catch { /* body not JSON */ }
+    throw new Error(msg);
+  }
+  const ct = res.headers.get('content-type') ?? '';
+  if (!ct.includes('application/json')) {
+    throw new Error(`POST ${path} → unexpected content-type: ${ct}`);
+  }
   return res.json() as Promise<T>;
 }
 
@@ -469,10 +629,16 @@ export const api = {
       post<Preference>('/preferences', d),
   },
   conflicts: {
-    check: (projectIds?: string[]) =>
-      get<ConflictCheck>(
-        '/conflicts' + (projectIds ? `?projectIds=${projectIds.join(',')}` : ''),
-      ),
+    check: (projectIds?: string[], tier?: 'advisory' | 'conflict') => {
+      let url = '/conflicts';
+      const params: string[] = [];
+      if (projectIds) params.push(`projectIds=${projectIds.join(',')}`);
+      if (tier) params.push(`tier=${tier}`);
+      if (params.length) url += `?${params.join('&')}`;
+      return get<ConflictCheck>(url);
+    },
+    dismiss: (id: string) =>
+      post<{ dismissed: boolean }>(`/conflicts/${id}/dismiss`, {}),
   },
   query: (q: string, projectId?: string) =>
     get<QueryResult>(
@@ -494,6 +660,8 @@ export const api = {
       get<TokenAnalytics>(`/analytics/tokens?since=${sinceDays}`),
     contextOverhead: () =>
       get<ContextOverhead>('/analytics/context-overhead'),
+    llmCosts: (sinceDays = 30) =>
+      get<LlmCostSummary>(`/analytics/llm-costs?since=${sinceDays}d`),
     auditOperations: (since?: number, until?: number) => {
       let url = '/analytics/audit/operations';
       const params: string[] = [];
@@ -508,6 +676,23 @@ export const api = {
     sessions: (cwd?: string) =>
       get<NativeSession[]>('/native/sessions' + (cwd ? `?cwd=${encodeURIComponent(cwd)}` : '')),
     session: (encodedPath: string) => get<NativeSessionDetail>(`/native/sessions/${encodedPath}`),
+    sessionTokens: (encodedPath: string) => get<SessionTokenDetail>(`/native/session-tokens?path=${encodedPath}`),
+  },
+  health: {
+    doctor: () => get<DoctorReport>('/health/doctor'),
+    fix: () => post<DoctorFixResult>('/health/fix', {}),
+    pipeline: (sinceDays = 7, projectId?: string) => {
+      let url = `/health/pipeline?since=${sinceDays}d`;
+      if (projectId) url += `&projectId=${projectId}`;
+      return get<PipelineStats>(url);
+    },
+  },
+  sessionTracking: {
+    active: () => get<TrackedSession[]>('/sessions/active'),
+    events: (sessionId: string, limit = 200) =>
+      get<SessionEvent[]>(`/sessions/${encodeURIComponent(sessionId)}/events?limit=${limit}`),
+    snapshot: (sessionId: string) =>
+      get<{ snapshot: string }>(`/sessions/${encodeURIComponent(sessionId)}/snapshot`),
   },
   langfuse: {
     status: () => get<{ configured: boolean }>('/langfuse/status'),

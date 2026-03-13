@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import type { NexusDb } from '../db/connection.js';
-import type { Conflict } from '../types/index.js';
+import type { Conflict, ConflictTier, ConflictSeverity } from '../types/index.js';
 import { auditLog } from './audit.js';
 import { findDecisionsByProject } from './decision.js';
 
@@ -8,6 +8,8 @@ interface ConflictRow {
   id: string;
   project_ids: string;
   description: string;
+  tier: string;
+  severity: string;
   detected_at: number;
   resolved_at: number | null;
   resolution: string | null;
@@ -18,6 +20,8 @@ function rowToConflict(row: ConflictRow): Conflict {
     id: row.id,
     projectIds: JSON.parse(row.project_ids) as string[],
     description: row.description,
+    tier: row.tier as ConflictTier,
+    severity: row.severity as ConflictSeverity,
     detectedAt: row.detected_at,
     resolvedAt: row.resolved_at ?? undefined,
     resolution: row.resolution ?? undefined,
@@ -36,6 +40,7 @@ export function findOpenConflicts(db: NexusDb, projectIds?: string[]): Conflict[
 export interface ConflictCheck {
   hasConflicts: boolean;
   conflicts: Conflict[];
+  advisories: Conflict[];
   potentialConflicts: Array<{ topic: string; description: string }>;
 }
 
@@ -45,9 +50,10 @@ export function checkConflicts(
   topic?: string,
 ): ConflictCheck {
   const existing = findOpenConflicts(db, projectIds);
+  const conflicts = existing.filter((c) => c.tier === 'conflict');
+  const advisories = existing.filter((c) => c.tier === 'advisory');
 
   // Simple heuristic: look for decisions in different projects with the same kind
-  // that might conflict (Phase 3 will do LLM-powered detection)
   const potentialConflicts: Array<{ topic: string; description: string }> = [];
 
   if (projectIds.length >= 2) {
@@ -78,8 +84,9 @@ export function checkConflicts(
   }
 
   return {
-    hasConflicts: existing.length > 0 || potentialConflicts.length > 0,
-    conflicts: existing,
+    hasConflicts: conflicts.length > 0 || potentialConflicts.length > 0,
+    conflicts,
+    advisories,
     potentialConflicts,
   };
 }
@@ -89,19 +96,23 @@ export function createConflict(
   projectIds: string[],
   description: string,
   source: 'cli' | 'mcp' | 'daemon' = 'daemon',
+  tier: ConflictTier = 'conflict',
+  severity: ConflictSeverity = 'medium',
 ): Conflict {
   const conflict: Conflict = {
     id: randomUUID(),
     projectIds,
     description,
+    tier,
+    severity,
     detectedAt: Date.now(),
   };
 
   db.prepare(
-    'INSERT INTO conflicts (id, project_ids, description, detected_at) VALUES (?, ?, ?, ?)',
-  ).run(conflict.id, JSON.stringify(conflict.projectIds), conflict.description, conflict.detectedAt);
+    'INSERT INTO conflicts (id, project_ids, description, tier, severity, detected_at) VALUES (?, ?, ?, ?, ?, ?)',
+  ).run(conflict.id, JSON.stringify(conflict.projectIds), conflict.description, conflict.tier, conflict.severity, conflict.detectedAt);
 
-  auditLog(db, { operation: 'conflict.create', source });
+  auditLog(db, { operation: `${tier}.create`, source });
   return conflict;
 }
 
@@ -117,6 +128,22 @@ export function resolveConflict(
 
   if (result.changes > 0) {
     auditLog(db, { operation: 'conflict.resolve', source, meta: { conflictId } });
+    return true;
+  }
+  return false;
+}
+
+export function dismissAdvisory(
+  db: NexusDb,
+  conflictId: string,
+  source: 'cli' | 'mcp' | 'daemon' = 'cli',
+): boolean {
+  const result = db
+    .prepare('UPDATE conflicts SET resolved_at = ?, resolution = ? WHERE id = ? AND tier = ?')
+    .run(Date.now(), 'dismissed', conflictId, 'advisory');
+
+  if (result.changes > 0) {
+    auditLog(db, { operation: 'advisory.dismiss', source, meta: { conflictId } });
     return true;
   }
   return false;

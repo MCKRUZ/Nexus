@@ -1,9 +1,9 @@
 import { useEffect, useState, useMemo, useCallback } from 'react';
 import { api, type TokenAnalytics, type ProjectEfficiency, type ContextOverhead, type OptimizationSuggestion } from '../api.js';
 
-type Range = '7d' | '30d' | '90d' | 'all';
+type Range = '1h' | '5h' | '1d' | '7d' | '30d' | '90d' | 'all';
 
-const RANGE_DAYS: Record<Range, number> = { '7d': 7, '30d': 30, '90d': 90, all: 365 };
+const RANGE_DAYS: Record<Range, number> = { '1h': 1, '5h': 1, '1d': 1, '7d': 7, '30d': 30, '90d': 90, all: 365 };
 
 // ─── Formatters ─────────────────────────────────────────────────────────────
 
@@ -855,13 +855,13 @@ export function TokenAudit() {
       {/* Filter bar */}
       <div className="filter-bar">
         <div className="range-btns">
-          {(['7d', '30d', '90d', 'all'] as Range[]).map((r) => (
+          {(['1h', '5h', '1d', '7d', '30d', '90d', 'all'] as Range[]).map((r) => (
             <button
               key={r}
               className={`range-btn${range === r ? ' active' : ''}`}
               onClick={() => setRange(r)}
             >
-              {r === 'all' ? 'All time' : r}
+              {r === 'all' ? 'All time' : r === '1h' ? '1h' : r === '5h' ? '5h' : r === '1d' ? '1d' : r}
             </button>
           ))}
         </div>

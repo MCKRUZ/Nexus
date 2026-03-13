@@ -1,7 +1,7 @@
 import { useEffect, useState, useMemo, useCallback } from 'react';
-import { api, type Stats, type Conflict, type ActivityEvent } from '../api.js';
+import { api, type Stats, type Conflict, type ActivityEvent, type LlmCostSummary } from '../api.js';
 
-type Range = '7d' | '30d' | '90d' | 'all';
+type Range = '1h' | '5h' | '1d' | '7d' | '30d' | '90d' | 'all';
 
 const KIND_COLORS: Record<string, string> = {
   architecture: '#58a6ff',
@@ -34,6 +34,9 @@ function relativeTime(ts: number): string {
 
 function cutoffForRange(range: Range): number {
   const now = Date.now();
+  if (range === '1h') return now - 3600000;
+  if (range === '5h') return now - 5 * 3600000;
+  if (range === '1d') return now - 86400000;
   if (range === '7d') return now - 7 * 86400000;
   if (range === '30d') return now - 30 * 86400000;
   if (range === '90d') return now - 90 * 86400000;
@@ -43,7 +46,7 @@ function cutoffForRange(range: Range): number {
 // ─── Activity Bar Chart ────────────────────────────────────────────────────────
 
 function ActivityBarChart({ events, range }: { events: ActivityEvent[]; range: Range }) {
-  const days = range === '7d' ? 7 : range === '30d' ? 30 : 60;
+  const days = range === '1h' ? 1 : range === '5h' ? 1 : range === '1d' ? 1 : range === '7d' ? 7 : range === '30d' ? 30 : 60;
 
   const buckets = useMemo(() => {
     const now = new Date();
@@ -266,6 +269,155 @@ function StatCard({ label, value, color, sub }: { label: string; value: number; 
   );
 }
 
+// ─── Month Cost Card (Nexus LLM costs only) ─────────────────────────────────
+
+function MonthCostCard({ costs }: { costs: LlmCostSummary | null }) {
+  if (!costs || costs.totalCalls === 0) {
+    return (
+      <div className="chart-card" style={{ flex: 1 }}>
+        <div className="chart-title">Nexus LLM Spend</div>
+        <div className="empty" style={{ padding: '16px 0' }}>No Nexus LLM calls recorded yet</div>
+      </div>
+    );
+  }
+
+  // Compute MTD: sum costs for days in current month
+  const now = new Date();
+  const year = now.getFullYear();
+  const month = now.getMonth();
+  const daysInMonth = new Date(year, month + 1, 0).getDate();
+  const dayOfMonth = now.getDate();
+
+  const monthPrefix = `${year}-${String(month + 1).padStart(2, '0')}`;
+  const mtdDays = costs.byDay.filter(d => d.date.startsWith(monthPrefix));
+  const mtdCost = mtdDays.reduce((s, d) => s + d.estimatedCostUsd, 0);
+  const mtdCalls = mtdDays.reduce((s, d) => s + d.calls, 0);
+
+  // Project: average daily spend * remaining days
+  const activeDays = mtdDays.length || 1;
+  const avgPerDay = mtdCost / activeDays;
+  const remainingDays = daysInMonth - dayOfMonth;
+  const projected = mtdCost + avgPerDay * remainingDays;
+
+  const fmt = (n: number) => n < 0.01 ? `$${n.toFixed(4)}` : n < 1 ? `$${n.toFixed(3)}` : `$${n.toFixed(2)}`;
+
+  return (
+    <div className="chart-card" style={{ flex: 1 }}>
+      <div className="chart-title">Nexus LLM Spend — {now.toLocaleString('en', { month: 'long', year: 'numeric' })}</div>
+      <div style={{ display: 'flex', gap: 24, alignItems: 'baseline', marginTop: 8 }}>
+        <div>
+          <div style={{ fontSize: 28, fontWeight: 700, color: 'var(--green)', fontVariantNumeric: 'tabular-nums' }}>
+            {fmt(mtdCost)}
+          </div>
+          <div style={{ fontSize: 11, color: 'var(--text2)', marginTop: 2 }}>spent MTD ({mtdCalls} call{mtdCalls !== 1 ? 's' : ''})</div>
+        </div>
+        <div>
+          <div style={{ fontSize: 22, fontWeight: 600, color: 'var(--text2)', fontVariantNumeric: 'tabular-nums' }}>
+            {fmt(projected)}
+          </div>
+          <div style={{ fontSize: 11, color: 'var(--text2)', marginTop: 2 }}>projected EOM</div>
+        </div>
+        <div>
+          <div style={{ fontSize: 16, fontWeight: 500, color: 'var(--text2)', fontVariantNumeric: 'tabular-nums' }}>
+            {fmt(avgPerDay)}/day
+          </div>
+          <div style={{ fontSize: 11, color: 'var(--text2)', marginTop: 2 }}>avg daily</div>
+        </div>
+      </div>
+      {costs.byProvider.length > 0 && (
+        <div style={{ fontSize: 11, color: 'var(--text2)', marginTop: 8 }}>
+          {costs.byProvider.map(p => `${p.provider}/${p.model}: ${p.calls} calls`).join(' · ')}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── Conflicts Banner ─────────────────────────────────────────────────────────
+
+function ConflictsBanner({ conflicts }: { conflicts: Conflict[] }) {
+  const [expanded, setExpanded] = useState(false);
+  const high = conflicts.filter(c => c.severity === 'high' || c.severity === 'critical');
+  const medium = conflicts.filter(c => c.severity === 'medium');
+  const low = conflicts.filter(c => c.severity === 'low');
+  const preview = conflicts.slice(0, 3);
+
+  return (
+    <div className="error-banner" style={{ cursor: 'pointer' }} onClick={() => setExpanded(e => !e)}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+        <span>
+          {conflicts.length} open conflict{conflicts.length > 1 ? 's' : ''}
+          {high.length > 0 && <span style={{ marginLeft: 8, fontWeight: 700 }}>{high.length} high</span>}
+          {medium.length > 0 && <span style={{ marginLeft: 8, opacity: 0.8 }}>{medium.length} medium</span>}
+          {low.length > 0 && <span style={{ marginLeft: 8, opacity: 0.6 }}>{low.length} low</span>}
+        </span>
+        <span style={{ fontSize: 11, opacity: 0.7 }}>{expanded ? 'collapse' : 'expand'}</span>
+      </div>
+      {!expanded && (
+        <div style={{ marginTop: 8, fontSize: 12, opacity: 0.85, lineHeight: 1.5 }}>
+          {preview.map((c, i) => (
+            <div key={i} style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: '100%' }}>
+              [{c.severity}] {c.description}
+            </div>
+          ))}
+          {conflicts.length > 3 && (
+            <div style={{ opacity: 0.6, marginTop: 4 }}>+ {conflicts.length - 3} more — click to expand</div>
+          )}
+        </div>
+      )}
+      {expanded && (
+        <div style={{ marginTop: 8, fontSize: 12, lineHeight: 1.6, maxHeight: 300, overflowY: 'auto' }}>
+          {conflicts.map((c, i) => (
+            <div key={i} style={{ marginBottom: 6, paddingBottom: 6, borderBottom: '1px solid rgba(255,255,255,0.1)' }}>
+              <span style={{ fontWeight: 600, marginRight: 8 }}>
+                [{c.severity}]
+              </span>
+              {c.description}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function AdvisoriesBanner({ advisories, onDismiss }: { advisories: Conflict[]; onDismiss: (id: string) => void }) {
+  const [expanded, setExpanded] = useState(false);
+
+  return (
+    <div style={{
+      background: 'rgba(56, 139, 253, 0.1)',
+      border: '1px solid rgba(56, 139, 253, 0.3)',
+      borderRadius: 8,
+      padding: '12px 16px',
+      cursor: 'pointer',
+    }} onClick={() => setExpanded(e => !e)}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', color: '#58a6ff' }}>
+        <span style={{ fontWeight: 600 }}>
+          {advisories.length} cross-project advisor{advisories.length > 1 ? 'ies' : 'y'}
+        </span>
+        <span style={{ fontSize: 11, opacity: 0.7 }}>{expanded ? 'collapse' : 'expand'}</span>
+      </div>
+      {expanded && (
+        <div style={{ marginTop: 8, fontSize: 12, lineHeight: 1.6, maxHeight: 300, overflowY: 'auto' }}>
+          {advisories.map((a) => (
+            <div key={a.id} style={{ marginBottom: 6, paddingBottom: 6, borderBottom: '1px solid rgba(56, 139, 253, 0.15)', display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 8 }}>
+              <span style={{ color: 'var(--text)' }}>{a.description}</span>
+              <button
+                className="btn"
+                style={{ fontSize: 10, padding: '2px 8px', flexShrink: 0 }}
+                onClick={(e) => { e.stopPropagation(); onDismiss(a.id); }}
+              >
+                Dismiss
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ─── Overview ──────────────────────────────────────────────────────────────────
 
 export function Overview() {
@@ -273,6 +425,8 @@ export function Overview() {
   const [stats, setStats] = useState<Stats | null>(null);
   const [activity, setActivity] = useState<ActivityEvent[]>([]);
   const [conflicts, setConflicts] = useState<Conflict[]>([]);
+  const [advisories, setAdvisories] = useState<Conflict[]>([]);
+  const [llmCosts, setLlmCosts] = useState<LlmCostSummary | null>(null);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
@@ -280,14 +434,17 @@ export function Overview() {
   const load = useCallback(async () => {
     setRefreshing(true);
     try {
-      const [s, ev, cc] = await Promise.all([
+      const [s, ev, cc, lc] = await Promise.all([
         api.stats(),
         api.activity(500),
         api.conflicts.check(),
+        api.analytics.llmCosts(90).catch(() => null),
       ]);
       setStats(s);
       setActivity(ev);
       setConflicts(cc.conflicts.filter(c => !c.resolvedAt));
+      setAdvisories((cc.advisories ?? []).filter(c => !c.resolvedAt));
+      setLlmCosts(lc);
       setLastUpdated(new Date());
     } catch (e) {
       console.error('Overview load error:', e);
@@ -305,6 +462,15 @@ export function Overview() {
     return () => clearInterval(timer);
   }, [load]);
 
+  const handleDismiss = useCallback(async (id: string) => {
+    try {
+      await api.conflicts.dismiss(id);
+      setAdvisories((prev) => prev.filter((a) => a.id !== id));
+    } catch (e) {
+      console.error('Dismiss error:', e);
+    }
+  }, []);
+
   const cutoff = cutoffForRange(range);
   const filtered = useMemo(() => activity.filter(e => e.timestamp >= cutoff), [activity, cutoff]);
   const filteredDecisions = filtered.filter(e => e.type === 'decision');
@@ -319,13 +485,13 @@ export function Overview() {
       {/* ── Filter bar ─────────────────────────────────────────────────────── */}
       <div className="filter-bar">
         <div className="range-btns">
-          {(['7d', '30d', '90d', 'all'] as Range[]).map(r => (
+          {(['1h', '5h', '1d', '7d', '30d', '90d', 'all'] as Range[]).map(r => (
             <button
               key={r}
               className={`range-btn${range === r ? ' active' : ''}`}
               onClick={() => setRange(r)}
             >
-              {r === 'all' ? 'All time' : r}
+              {r === 'all' ? 'All time' : r === '1h' ? '1h' : r === '5h' ? '5h' : r === '1d' ? '1d' : r}
             </button>
           ))}
         </div>
@@ -355,10 +521,16 @@ export function Overview() {
           sub={`in ${range === 'all' ? 'all time' : range}`}
         />
         <StatCard
-          label="Open Conflicts"
+          label="Conflicts"
           value={conflicts.length}
           color={conflicts.length > 0 ? 'red' : 'gray'}
           sub={conflicts.length > 0 ? 'needs attention' : 'all clear'}
+        />
+        <StatCard
+          label="Advisories"
+          value={advisories.length}
+          color={advisories.length > 0 ? 'accent' : 'gray'}
+          sub={advisories.length > 0 ? 'knowledge transfers' : 'none'}
         />
         <StatCard
           label="Documented"
@@ -368,12 +540,18 @@ export function Overview() {
         />
       </div>
 
-      {/* ── Conflicts banner ───────────────────────────────────────────────── */}
-      {conflicts.length > 0 && (
-        <div className="error-banner">
-          ⚡ {conflicts.length} open conflict{conflicts.length > 1 ? 's' : ''} — {conflicts.map(c => c.description).join(' · ')}
-        </div>
+      {/* ── Advisories banner (blue) ─────────────────────────────────────── */}
+      {advisories.length > 0 && (
+        <AdvisoriesBanner advisories={advisories} onDismiss={handleDismiss} />
       )}
+
+      {/* ── Conflicts banner (red) ──────────────────────────────────────── */}
+      {conflicts.length > 0 && (
+        <ConflictsBanner conflicts={conflicts} />
+      )}
+
+      {/* ── Monthly spend ──────────────────────────────────────────────────── */}
+      <MonthCostCard costs={llmCosts} />
 
       {/* ── Activity timeline ──────────────────────────────────────────────── */}
       <div className="chart-card">

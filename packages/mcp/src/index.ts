@@ -275,8 +275,9 @@ server.tool(
   {
     projectPaths: z.array(z.string()).min(1).describe('Absolute paths of projects to check against each other'),
     topic: z.string().optional().describe('Narrow conflict check to a specific topic or technology'),
+    tier: z.enum(['advisory', 'conflict']).optional().describe('Filter by tier (omit for both)'),
   },
-  async ({ projectPaths, topic }) => {
+  async ({ projectPaths, topic, tier }) => {
     const result = withService((svc) => {
       const projectIds: string[] = [];
       const notFound: string[] = [];
@@ -303,22 +304,35 @@ server.tool(
     const lines: string[] = [];
 
     if (notFound.length > 0) {
-      lines.push(`⚠ Some paths not registered with Nexus: ${notFound.join(', ')}\n`);
+      lines.push(`Some paths not registered with Nexus: ${notFound.join(', ')}\n`);
     }
 
-    if (!check.hasConflicts) {
-      lines.push('✓ No conflicts detected across the specified projects.');
+    const showConflicts = !tier || tier === 'conflict';
+    const showAdvisories = !tier || tier === 'advisory';
+
+    const hasAny = check.conflicts.length > 0 || check.advisories.length > 0 || check.potentialConflicts.length > 0;
+
+    if (!hasAny) {
+      lines.push('No conflicts or advisories detected across the specified projects.');
     } else {
-      if (check.conflicts.length > 0) {
-        lines.push(`## Recorded Conflicts (${check.conflicts.length})`);
+      if (showConflicts && check.conflicts.length > 0) {
+        lines.push(`## Conflicts (${check.conflicts.length})`);
         for (const c of check.conflicts) {
-          lines.push(`- ${c.description}`);
+          lines.push(`- [${c.severity}] ${c.description}`);
           lines.push(`  Projects: ${c.projectIds.join(', ')}`);
           lines.push(`  Detected: ${new Date(c.detectedAt).toLocaleDateString()}`);
         }
         lines.push('');
       }
-      if (check.potentialConflicts.length > 0) {
+      if (showAdvisories && check.advisories.length > 0) {
+        lines.push(`## Advisories (${check.advisories.length})`);
+        for (const a of check.advisories) {
+          lines.push(`- ${a.description}`);
+          lines.push(`  Projects: ${a.projectIds.join(', ')} | ID: ${a.id}`);
+        }
+        lines.push('');
+      }
+      if (showConflicts && check.potentialConflicts.length > 0) {
         lines.push(`## Potential Conflicts (${check.potentialConflicts.length})`);
         for (const pc of check.potentialConflicts) {
           lines.push(`- **${pc.topic}:** ${pc.description}`);

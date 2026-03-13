@@ -4,7 +4,7 @@ REM  nexus-build.bat — Production build for Nexus Desktop
 REM  Builds all packages, compiles server sidecar, bundles Tauri.
 REM ──────────────────────────────────────────────────────────────
 
-setlocal
+setlocal enabledelayedexpansion
 
 REM Ensure cargo + npm are on PATH
 set "PATH=%USERPROFILE%\.cargo\bin;%APPDATA%\npm;%PATH%"
@@ -37,5 +37,20 @@ echo ============================================================
 echo  BUILD COMPLETE
 echo  Output: packages\dashboard\src-tauri\target\release\bundle\
 echo ============================================================
+echo.
+
+set "INSTALLER=%~dp0packages\dashboard\src-tauri\target\release\bundle\nsis\Nexus_0.1.0_x64-setup.exe"
+if exist "%INSTALLER%" (
+    echo  Installer: %INSTALLER%
+    echo.
+    set /p INSTALL="  Run installer now? [Y/n] "
+    if /i "!INSTALL!" neq "n" (
+        echo  Launching installer...
+        start "" "%INSTALLER%"
+    )
+) else (
+    echo  WARNING: NSIS installer not found at expected path.
+    echo  Check: packages\dashboard\src-tauri\target\release\bundle\nsis\
+)
 
 endlocal

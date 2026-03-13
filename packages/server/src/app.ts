@@ -1,12 +1,14 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
+// @ts-expect-error — better-sqlite3 types are in @nexus/core, not this package
+import Database from 'better-sqlite3';
 import { Hono } from 'hono';
 import { cors } from 'hono/cors';
 import { serveStatic } from '@hono/node-server/serve-static';
-import { NexusService, isInitialized, listSessions, getSessionDetail, getNativeStats, syncClaudeMd, selectRelevantProjects, computeSessionAnalytics, computeTokenAnalytics, computeContextOverhead } from '@nexus/core';
-import type { SessionAnalytics, TokenAnalytics, ContextOverhead } from '@nexus/core';
-import type { DecisionKind, UpsertNoteParams, Conflict } from '@nexus/core';
+import { NexusService, isInitialized, listSessions, getSessionDetail, getNativeStats, computeSessionAnalytics, computeTokenAnalytics, computeContextOverhead, buildSessionSnapshot, getPricing, calculateCost } from '@nexus/core';
+import type { SessionAnalytics, TokenAnalytics, ContextOverhead, DoctorReport, PipelineStats, ModelPricing, LlmCostSummary } from '@nexus/core';
+import type { DecisionKind, UpsertNoteParams } from '@nexus/core';
 
 const app = new Hono();
 
@@ -166,11 +168,28 @@ app.post('/api/patterns', async (c) => {
 
 app.get('/api/conflicts', (c) => {
   const projectIdsParam = c.req.query('projectIds');
+  const tierParam = c.req.query('tier') as 'advisory' | 'conflict' | undefined;
   const projectIds = projectIdsParam ? projectIdsParam.split(',') : undefined;
   const check = withSvc((svc) =>
     svc.checkConflicts(projectIds ?? withSvc((s) => s.listProjects()).map((p) => p.id)),
   );
+  // Optionally filter by tier
+  if (tierParam) {
+    if (tierParam === 'advisory') {
+      return c.json({ ...check, conflicts: [], hasConflicts: check.advisories.length > 0 });
+    }
+    if (tierParam === 'conflict') {
+      return c.json({ ...check, advisories: [], hasConflicts: check.conflicts.length > 0 || check.potentialConflicts.length > 0 });
+    }
+  }
   return c.json(check);
+});
+
+app.post('/api/conflicts/:id/dismiss', (c) => {
+  const id = c.req.param('id');
+  const dismissed = withSvc((svc) => svc.dismissAdvisory(id, 'daemon'));
+  if (!dismissed) return c.json({ error: 'Not found or not an advisory' }, 404);
+  return c.json({ dismissed: true });
 });
 
 // ─── Preferences ──────────────────────────────────────────────────────────────
@@ -246,41 +265,12 @@ app.post('/api/sync', (c) => {
     const allProjects = svc.listProjects();
 
     return allProjects.map((project) => {
-      const decisions = svc.getDecisionsForProject(project.id);
-      const patterns = svc.getPatternsForProject(project.id);
-      const preferences = svc.listPreferences(project.id);
-      const notes = svc.getNotesForProject(project.id);
-      const { conflicts } = svc.checkConflicts([project.id]);
-      const otherProjects = allProjects.filter((p) => p.id !== project.id);
-      const relatedProjects = otherProjects
-        .filter((p) => p.parentId === project.id || project.parentId === p.id)
-        .map((p) => ({ name: p.name, path: p.path }));
-      const allNotesMap = otherProjects.map((p) => ({
-        projectName: p.name,
-        project: p,
-        notes: svc.getNotesForProject(p.id),
-      }));
-      const relatedProjectNotes = selectRelevantProjects(
-        { project, notes },
-        allNotesMap,
-      );
-
       try {
-        const result = syncClaudeMd({
-          projectPath: project.path,
-          notes,
-          relatedProjectNotes,
-          decisions,
-          patterns,
-          preferences,
-          conflicts: conflicts as Conflict[],
-          relatedProjects,
-        });
+        const updated = svc.syncProject(project.id);
         return {
           projectId: project.id,
           projectName: project.name,
-          updated: result.updated,
-          claudeMdPath: result.claudeMdPath,
+          updated,
           error: null,
         };
       } catch (err: unknown) {
@@ -288,7 +278,6 @@ app.post('/api/sync', (c) => {
           projectId: project.id,
           projectName: project.name,
           updated: false,
-          claudeMdPath: null,
           error: err instanceof Error ? err.message : 'Unknown error',
         };
       }
@@ -400,6 +389,388 @@ app.get('/api/native/sessions/:encodedPath', async (c) => {
   }
 });
 
+// ─── Session Token Detail ─────────────────────────────────────────────────────
+
+type MessageSource =
+  | 'system_context'
+  | 'hook_injection'
+  | 'user_message'
+  | 'tool_result'
+  | 'assistant_text'
+  | 'assistant_tool'
+  | 'assistant_mixed';
+
+interface TimelineMessage {
+  index: number;
+  timestamp: string;
+  role: 'user' | 'assistant';
+  source: MessageSource;
+  summary: string;
+  toolNames?: string[];
+  tokens?: {
+    inputTokens: number;
+    outputTokens: number;
+    cacheWriteTokens: number;
+    cacheReadTokens: number;
+    costUsd: number;
+    cacheHitPct: number;
+    inputDelta: number;
+  };
+  model?: string;
+}
+
+interface RawLine {
+  type?: string;
+  uuid?: string;
+  timestamp?: string;
+  sessionId?: string;
+  cwd?: string;
+  message?: {
+    role?: string;
+    model?: string;
+    content?: unknown;
+    usage?: {
+      input_tokens?: number;
+      cache_creation_input_tokens?: number;
+      cache_read_input_tokens?: number;
+      output_tokens?: number;
+    };
+  };
+}
+
+function classifyUserMessage(content: unknown, isFirst: boolean): MessageSource {
+  if (isFirst) return 'system_context';
+  const blocks: unknown[] = Array.isArray(content) ? content : [];
+
+  // Check for tool_result blocks
+  const hasToolResult = blocks.some(
+    (b) => typeof b === 'object' && b !== null && (b as Record<string, unknown>)['type'] === 'tool_result',
+  );
+  if (hasToolResult) return 'tool_result';
+
+  // Check for system-reminder tags in text content
+  const textContent = blocks
+    .filter((b): b is Record<string, unknown> => typeof b === 'object' && b !== null && (b as Record<string, unknown>)['type'] === 'text')
+    .map((b) => String((b as Record<string, unknown>)['text'] ?? ''))
+    .join('');
+  if (typeof content === 'string' && content.includes('<system-reminder>')) return 'hook_injection';
+  if (textContent.includes('<system-reminder>')) return 'hook_injection';
+
+  return 'user_message';
+}
+
+function classifyAssistantMessage(content: unknown): MessageSource {
+  const blocks: unknown[] = Array.isArray(content) ? content : [];
+  let hasText = false;
+  let hasToolUse = false;
+  for (const b of blocks) {
+    if (typeof b !== 'object' || b === null) continue;
+    const t = (b as Record<string, unknown>)['type'];
+    if (t === 'text') hasText = true;
+    if (t === 'tool_use') hasToolUse = true;
+  }
+  if (hasText && hasToolUse) return 'assistant_mixed';
+  if (hasToolUse) return 'assistant_tool';
+  return 'assistant_text';
+}
+
+function extractSummary(content: unknown, role: string): string {
+  const blocks: unknown[] = Array.isArray(content) ? content : typeof content === 'string' ? [{ type: 'text', text: content }] : [];
+  for (const b of blocks) {
+    if (typeof b !== 'object' || b === null) continue;
+    const t = (b as Record<string, unknown>)['type'];
+    if (t === 'text') {
+      const text = String((b as Record<string, unknown>)['text'] ?? '').trim();
+      if (text) return text.slice(0, 200);
+    }
+    if (t === 'tool_use') {
+      const name = String((b as Record<string, unknown>)['name'] ?? 'tool');
+      return `[${name}]`;
+    }
+    if (t === 'tool_result') {
+      const content2 = (b as Record<string, unknown>)['content'];
+      if (typeof content2 === 'string') return content2.slice(0, 200);
+      if (Array.isArray(content2)) {
+        const first = content2[0];
+        if (typeof first === 'object' && first !== null && (first as Record<string, unknown>)['type'] === 'text') {
+          return String((first as Record<string, unknown>)['text'] ?? '').slice(0, 200);
+        }
+      }
+      return '[tool result]';
+    }
+  }
+  return '';
+}
+
+function extractToolNames(content: unknown, role: string): string[] {
+  const blocks: unknown[] = Array.isArray(content) ? content : [];
+  const names: string[] = [];
+  const type = role === 'assistant' ? 'tool_use' : 'tool_result';
+  for (const b of blocks) {
+    if (typeof b !== 'object' || b === null) continue;
+    if ((b as Record<string, unknown>)['type'] === type) {
+      const name = (b as Record<string, unknown>)['name'];
+      if (name && typeof name === 'string') names.push(name);
+    }
+  }
+  return names.length > 0 ? names : undefined as unknown as string[];
+}
+
+app.get('/api/native/session-tokens', (c) => {
+  const encodedPath = c.req.query('path');
+  if (!encodedPath) {
+    return c.json({ error: 'path query parameter required' }, 400);
+  }
+  let jsonlPath: string;
+  try {
+    // Decode URL-safe base64 (- → +, _ → /, re-pad with =)
+    const standardB64 = encodedPath.replace(/-/g, '+').replace(/_/g, '/');
+    const padded = standardB64 + '='.repeat((4 - (standardB64.length % 4)) % 4);
+    jsonlPath = Buffer.from(padded, 'base64').toString('utf-8');
+  } catch {
+    return c.json({ error: 'Invalid path encoding' }, 400);
+  }
+
+  // Normalize both paths for comparison (handle mixed slashes on Windows)
+  const normalizedPath = path.normalize(jsonlPath);
+  const normalizedClaudeDir = path.normalize(CLAUDE_DIR);
+  if (!normalizedPath.startsWith(normalizedClaudeDir)) {
+    return c.json({ error: 'Path not allowed' }, 403);
+  }
+  // Use the normalized path for reading
+  jsonlPath = normalizedPath;
+
+  let fileContent: string;
+  try {
+    fileContent = fs.readFileSync(jsonlPath, 'utf-8');
+  } catch {
+    return c.json({ error: 'Session file not found' }, 404);
+  }
+
+  const timeline: TimelineMessage[] = [];
+  let sessionId = '';
+  let cwd = '';
+  let startedAt = '';
+  let lastTimestamp = '';
+  let userTurnCount = 0;
+  let totalToolCalls = 0;
+  let firstUserSeen = false;
+  let msgIndex = 0;
+
+  // Track previous assistant input tokens for delta calculation
+  let prevAssistantInput = 0;
+
+  // Model cost accumulation
+  const modelCosts = new Map<string, { requests: number; costUsd: number }>();
+
+  // Source breakdown accumulation
+  const sourceAccum = new Map<MessageSource, { count: number; estimatedTokens: number }>();
+
+  // Totals
+  let totalInput = 0;
+  let totalOutput = 0;
+  let totalCacheWrite = 0;
+  let totalCacheRead = 0;
+  let totalCost = 0;
+
+  // We need to track user messages between assistant turns for attribution
+  const pendingUserSources: MessageSource[] = [];
+
+  for (const line of fileContent.split('\n')) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+
+    let parsed: RawLine;
+    try {
+      parsed = JSON.parse(trimmed) as RawLine;
+    } catch {
+      continue;
+    }
+
+    if (parsed.type === 'progress') continue;
+    if (!parsed.uuid) continue;
+
+    if (!sessionId && parsed.sessionId) sessionId = parsed.sessionId;
+    if (!cwd && parsed.cwd) cwd = parsed.cwd;
+    if (!startedAt && parsed.timestamp) startedAt = parsed.timestamp;
+    if (parsed.timestamp) lastTimestamp = parsed.timestamp;
+
+    const msg = parsed.message;
+    if (!msg || !msg.role) continue;
+
+    if (msg.role === 'user') {
+      const isFirst = !firstUserSeen;
+      firstUserSeen = true;
+      const source = classifyUserMessage(msg.content, isFirst);
+
+      // Count user turns (non-tool-result)
+      if (source !== 'tool_result') userTurnCount++;
+
+      const toolNames = extractToolNames(msg.content, 'user');
+
+      timeline.push({
+        index: msgIndex++,
+        timestamp: parsed.timestamp ?? '',
+        role: 'user',
+        source,
+        summary: extractSummary(msg.content, 'user'),
+        ...(toolNames ? { toolNames } : {}),
+      });
+
+      pendingUserSources.push(source);
+
+      // Accumulate source count
+      const sa = sourceAccum.get(source) ?? { count: 0, estimatedTokens: 0 };
+      sa.count++;
+      sourceAccum.set(source, sa);
+
+      continue;
+    }
+
+    if (msg.role !== 'assistant') continue;
+
+    // Count tool calls
+    if (Array.isArray(msg.content)) {
+      for (const block of msg.content) {
+        if (typeof block === 'object' && block !== null && (block as Record<string, unknown>)['type'] === 'tool_use') {
+          totalToolCalls++;
+        }
+      }
+    }
+
+    const source = classifyAssistantMessage(msg.content);
+    const toolNames = extractToolNames(msg.content, 'assistant');
+    const model = msg.model ?? 'unknown';
+
+    let tokens: TimelineMessage['tokens'] | undefined;
+
+    if (msg.usage) {
+      const usage = msg.usage;
+      const input = usage.input_tokens ?? 0;
+      const cacheWrite = usage.cache_creation_input_tokens ?? 0;
+      const cacheRead = usage.cache_read_input_tokens ?? 0;
+      const output = usage.output_tokens ?? 0;
+
+      if (input > 0 || cacheWrite > 0 || cacheRead > 0 || output > 0) {
+        const pricing = getPricing(model);
+        const cost = calculateCost(pricing, input, cacheWrite, cacheRead, output);
+        const totalInputForMsg = input + cacheWrite + cacheRead;
+        const cacheHitPct = totalInputForMsg > 0 ? (cacheRead / totalInputForMsg) * 100 : 0;
+        const inputDelta = input - prevAssistantInput;
+
+        tokens = {
+          inputTokens: input,
+          outputTokens: output,
+          cacheWriteTokens: cacheWrite,
+          cacheReadTokens: cacheRead,
+          costUsd: cost,
+          cacheHitPct,
+          inputDelta,
+        };
+
+        prevAssistantInput = input;
+
+        totalInput += input;
+        totalOutput += output;
+        totalCacheWrite += cacheWrite;
+        totalCacheRead += cacheRead;
+        totalCost += cost;
+
+        // Model accumulation
+        const mc = modelCosts.get(model) ?? { requests: 0, costUsd: 0 };
+        mc.requests++;
+        mc.costUsd += cost;
+        modelCosts.set(model, mc);
+
+        // Attribute input delta to pending user sources
+        if (pendingUserSources.length > 0 && inputDelta > 0) {
+          const perSource = inputDelta / pendingUserSources.length;
+          for (const ps of pendingUserSources) {
+            const sa = sourceAccum.get(ps) ?? { count: 0, estimatedTokens: 0 };
+            sa.estimatedTokens += perSource;
+            sourceAccum.set(ps, sa);
+          }
+        }
+        pendingUserSources.length = 0;
+      }
+    }
+
+    timeline.push({
+      index: msgIndex++,
+      timestamp: parsed.timestamp ?? '',
+      role: 'assistant',
+      source,
+      summary: extractSummary(msg.content, 'assistant'),
+      ...(toolNames ? { toolNames } : {}),
+      ...(tokens ? { tokens } : {}),
+      ...(model !== 'unknown' ? { model } : {}),
+    });
+  }
+
+  // Build source breakdown
+  const totalAllInput = totalInput + totalCacheWrite + totalCacheRead;
+  const sourceBreakdown = [...sourceAccum.entries()].map(([source, acc]) => ({
+    source,
+    count: acc.count,
+    estimatedTokens: Math.round(acc.estimatedTokens),
+    pctOfInput: totalAllInput > 0 ? Math.round((acc.estimatedTokens / totalAllInput) * 1000) / 10 : 0,
+  })).sort((a, b) => b.estimatedTokens - a.estimatedTokens);
+
+  // Cache savings
+  // Compute per-model cache savings (based on pricing difference)
+  let totalCacheSavings = 0;
+  let hypotheticalCost = 0;
+  for (const tm of timeline) {
+    if (tm.role === 'assistant' && tm.tokens && tm.model) {
+      const pricing = getPricing(tm.model);
+      totalCacheSavings += (tm.tokens.cacheReadTokens * (pricing.input - pricing.cacheRead)) / 1_000_000;
+      hypotheticalCost += calculateCost(
+        pricing,
+        tm.tokens.inputTokens + tm.tokens.cacheReadTokens,
+        tm.tokens.cacheWriteTokens,
+        0,
+        tm.tokens.outputTokens,
+      );
+    }
+  }
+
+  const totalAllInputForRate = totalInput + totalCacheWrite + totalCacheRead;
+  const cacheHitRate = totalAllInputForRate > 0 ? (totalCacheRead / totalAllInputForRate) * 100 : 0;
+
+  const durationMs = startedAt && lastTimestamp
+    ? new Date(lastTimestamp).getTime() - new Date(startedAt).getTime()
+    : 0;
+
+  const models = [...modelCosts.entries()].map(([model, mc]) => ({
+    model,
+    requests: mc.requests,
+    costUsd: mc.costUsd,
+  })).sort((a, b) => b.costUsd - a.costUsd);
+
+  return c.json({
+    sessionId,
+    cwd,
+    startedAt,
+    lastActivityAt: lastTimestamp,
+    durationMs,
+    userTurns: userTurnCount,
+    toolCalls: totalToolCalls,
+    timeline,
+    sourceBreakdown,
+    totals: {
+      inputTokens: totalInput,
+      outputTokens: totalOutput,
+      cacheWriteTokens: totalCacheWrite,
+      cacheReadTokens: totalCacheRead,
+      costUsd: totalCost,
+      cacheSavingsUsd: totalCacheSavings,
+      cacheHitRate,
+      hypotheticalCostWithoutCache: hypotheticalCost,
+    },
+    models,
+  });
+});
+
 // ─── Analytics ───────────────────────────────────────────────────────────────
 
 let sessionAnalyticsCache: { data: SessionAnalytics; at: number } | null = null;
@@ -476,6 +847,135 @@ app.get('/api/analytics/audit/operations', (c) => {
   return c.json(counts);
 });
 
+// ─── Health / Diagnostics ─────────────────────────────────────────────────
+
+app.get('/api/health/doctor', (c) => {
+  try {
+    const report = withSvc((svc) => svc.getDoctorReport());
+    return c.json(report);
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : 'Unknown error';
+    return c.json({ error: msg }, 500);
+  }
+});
+
+app.post('/api/health/fix', (c) => {
+  try {
+    const result = withSvc((svc) => svc.runDoctorFix());
+    return c.json(result);
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : 'Unknown error';
+    return c.json({ error: msg }, 500);
+  }
+});
+
+app.get('/api/health/pipeline', (c) => {
+  try {
+    const sinceParam = c.req.query('since');
+    const projectId = c.req.query('projectId');
+    let since: number | undefined;
+    if (sinceParam) {
+      const match = sinceParam.match(/^(\d+)d$/);
+      if (match && match[1]) {
+        since = Date.now() - parseInt(match[1], 10) * 24 * 60 * 60 * 1000;
+      } else {
+        since = parseInt(sinceParam, 10);
+      }
+    }
+    const stats = withSvc((svc) =>
+      svc.getPipelineStats(projectId ?? undefined, since),
+    );
+    return c.json(stats);
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : 'Unknown error';
+    return c.json({ error: msg }, 500);
+  }
+});
+
+// ─── Nexus LLM Costs ─────────────────────────────────────────────────────────
+
+app.get('/api/analytics/llm-costs', (c) => {
+  try {
+    const sinceParam = c.req.query('since');
+    let since: number | undefined;
+    if (sinceParam) {
+      const match = sinceParam.match(/^(\d+)d$/);
+      if (match && match[1]) {
+        since = Date.now() - parseInt(match[1], 10) * 24 * 60 * 60 * 1000;
+      } else {
+        since = parseInt(sinceParam, 10);
+      }
+    }
+    const costs = withSvc((svc) => svc.getLlmCosts(since));
+    return c.json(costs);
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : 'Unknown error';
+    return c.json({ error: msg }, 500);
+  }
+});
+
+// ─── Session Tracking (reads from ~/.claude/nexus-session.db) ────────────────
+
+const SESSION_DB_PATH = path.join(os.homedir(), '.claude', 'nexus-session.db');
+
+function withSessionDb<T>(fn: (db: Database.Database) => T): T | null {
+  if (!fs.existsSync(SESSION_DB_PATH)) return null;
+  const db = new Database(SESSION_DB_PATH, { readonly: true });
+  db.pragma('journal_mode = WAL');
+  try {
+    return fn(db);
+  } finally {
+    db.close();
+  }
+}
+
+app.get('/api/sessions/active', (c) => {
+  const sessions = withSessionDb((db) =>
+    db.prepare(
+      `SELECT session_id, project_dir, started_at, last_event, event_count, compact_count
+       FROM session_meta ORDER BY last_event DESC LIMIT 50`,
+    ).all(),
+  );
+  return c.json(sessions ?? []);
+});
+
+app.get('/api/sessions/:id/events', (c) => {
+  const sessionId = c.req.param('id');
+  const limit = parseInt(c.req.query('limit') ?? '200', 10);
+  const events = withSessionDb((db) =>
+    db.prepare(
+      `SELECT id, type, category, priority, data, source, created_at
+       FROM session_events WHERE session_id = ? ORDER BY id DESC LIMIT ?`,
+    ).all(sessionId, limit),
+  );
+  return c.json(events ?? []);
+});
+
+app.get('/api/sessions/:id/snapshot', (c) => {
+  const sessionId = c.req.param('id');
+  const events = withSessionDb((db) =>
+    db.prepare(
+      `SELECT type, category, priority, data, source
+       FROM session_events WHERE session_id = ? ORDER BY id ASC`,
+    ).all(sessionId),
+  ) as Array<{ type: string; category: string; priority: number; data: string; source: string }> | null;
+
+  if (!events || events.length === 0) {
+    return c.json({ snapshot: '' });
+  }
+
+  const snapshot = buildSessionSnapshot(
+    events.map((e) => ({
+      type: e.type as any,
+      category: e.category as any,
+      priority: e.priority as any,
+      data: e.data,
+      source: e.source,
+    })),
+  );
+  return c.json({ snapshot });
+});
+
 // ─── Langfuse Proxy ───────────────────────────────────────────────────────────
 
 function getLangfuseConfig(): { baseUrl: string; authHeader: string } | null {
@@ -495,8 +995,23 @@ function getLangfuseConfig(): { baseUrl: string; authHeader: string } | null {
   }
 }
 
-app.get('/api/langfuse/status', (c) => {
-  return c.json({ configured: getLangfuseConfig() !== null });
+app.get('/api/langfuse/status', async (c) => {
+  const lf = getLangfuseConfig();
+  if (!lf) return c.json({ configured: false, reachable: false });
+
+  // Quick reachability check (3s timeout)
+  try {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 3_000);
+    const res = await fetch(`${lf.baseUrl}/api/public/health`, {
+      headers: { Authorization: lf.authHeader },
+      signal: controller.signal,
+    });
+    clearTimeout(timeout);
+    return c.json({ configured: true, reachable: res.ok });
+  } catch {
+    return c.json({ configured: true, reachable: false });
+  }
 });
 
 // Generic read-only proxy: /api/langfuse/* → {langfuseBase}/api/public/*
@@ -510,7 +1025,7 @@ app.get('/api/langfuse/*', async (c) => {
 
   try {
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 15_000);
+    const timeout = setTimeout(() => controller.abort(), 5_000);
     const res = await fetch(lfUrl, {
       headers: { Authorization: lf.authHeader },
       signal: controller.signal,
@@ -526,6 +1041,9 @@ app.get('/api/langfuse/*', async (c) => {
     return c.json({ error: `Langfuse unreachable: ${msg}` }, 502);
   }
 });
+
+// ─── API 404 guard — return JSON for any unmatched /api/* route ───────────────
+app.all('/api/*', (c) => c.json({ error: 'Not found' }, 404));
 
 // ─── Dashboard (static) ───────────────────────────────────────────────────────
 

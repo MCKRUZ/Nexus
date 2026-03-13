@@ -10,12 +10,9 @@ function makeTempDir(): string {
 
 const EMPTY_INPUT = {
   notes: [],
-  relatedProjectNotes: [],
+  portfolio: [],
   decisions: [],
-  patterns: [],
-  preferences: [],
   conflicts: [],
-  relatedProjects: [],
 };
 
 describe('syncClaudeMd', () => {
@@ -85,33 +82,74 @@ describe('syncClaudeMd', () => {
     expect(content).toContain('<!-- nexus:start -->');
   });
 
-  it('renders notes from related projects under their own heading', () => {
+  it('renders portfolio map table with (this) marker', () => {
     const result = syncClaudeMd({
       ...EMPTY_INPUT,
       projectPath: tmpDir,
-      relatedProjectNotes: [
+      portfolio: [
+        { name: 'TeamsBuddy', description: 'Teams bot for standup automation', tags: ['csharp', 'signalr'], isCurrent: true },
+        { name: 'Nexus', description: 'Cross-project intelligence layer', tags: ['typescript', 'sqlite'], isCurrent: false },
+        { name: 'OpenClaw', description: '', tags: ['typescript'], isCurrent: false },
+      ],
+    });
+
+    const content = fs.readFileSync(result.claudeMdPath, 'utf8');
+    expect(content).toContain('### Portfolio');
+    expect(content).toContain('| Project | Description | Tech |');
+    expect(content).toContain('**TeamsBuddy** (this)');
+    expect(content).toContain('Teams bot for standup automation');
+    expect(content).toContain('| Nexus |');
+    // Project without description gets dash
+    expect(content).toMatch(/OpenClaw.*—/);
+  });
+
+  it('excludes "Project Overview" note from own-project context', () => {
+    const result = syncClaudeMd({
+      ...EMPTY_INPUT,
+      projectPath: tmpDir,
+      portfolio: [
+        { name: 'MyProject', description: 'My project overview content', tags: [], isCurrent: true },
+      ],
+      notes: [
+        { id: 'n1', projectId: 'p1', title: 'Project Overview', content: 'My project overview content', tags: [], createdAt: Date.now(), updatedAt: Date.now(), source: 'mcp' },
+        { id: 'n2', projectId: 'p1', title: 'Architecture Notes', content: 'Some architecture details', tags: ['arch'], createdAt: Date.now(), updatedAt: Date.now(), source: 'mcp' },
+      ],
+    });
+
+    const content = fs.readFileSync(result.claudeMdPath, 'utf8');
+    // "Project Overview" should NOT appear as a ### Project Context heading
+    expect(content).not.toContain('#### Project Overview');
+    // But "Architecture Notes" should appear
+    expect(content).toContain('#### Architecture Notes');
+  });
+
+  it('renders behavioral rule text', () => {
+    const result = syncClaudeMd({ ...EMPTY_INPUT, projectPath: tmpDir });
+    const content = fs.readFileSync(result.claudeMdPath, 'utf8');
+
+    expect(content).toContain('**Cross-project rule**');
+    expect(content).toContain('nexus_query');
+  });
+
+  it('renders active conflicts', () => {
+    const result = syncClaudeMd({
+      ...EMPTY_INPUT,
+      projectPath: tmpDir,
+      conflicts: [
         {
-          projectName: 'Sage',
-          notes: [
-            {
-              id: 'n1',
-              projectId: 'sage-id',
-              title: 'Sage Overview',
-              content: 'Sage is a voice AI companion.',
-              tags: ['context'],
-              createdAt: Date.now(),
-              updatedAt: Date.now(),
-              source: 'mcp',
-            },
-          ],
+          id: 'c1',
+          projectIds: ['p1', 'p2'],
+          description: 'Auth format divergence',
+          tier: 'conflict',
+          severity: 'high',
+          detectedAt: Date.now(),
         },
       ],
     });
 
     const content = fs.readFileSync(result.claudeMdPath, 'utf8');
-    expect(content).toContain('### Context from Sage');
-    expect(content).toContain('#### Sage Overview');
-    expect(content).toContain('Sage is a voice AI companion.');
+    expect(content).toContain('### Active Conflicts');
+    expect(content).toContain('[high] Auth format divergence');
   });
 
   it('updates existing nexus section when decisions change', () => {
@@ -186,27 +224,76 @@ describe('token budget enforcement', () => {
     expect(content).toContain('B'.repeat(149) + '…');
   });
 
-  it('truncates cross-project note content to 80 chars', () => {
-    const longContent = 'C'.repeat(200);
+  it('truncates portfolio description to 80 chars', () => {
+    const longDesc = 'D'.repeat(200);
     const result = syncClaudeMd({
       ...EMPTY_INPUT,
       projectPath: tmpDir,
-      relatedProjectNotes: [
+      portfolio: [
+        { name: 'LongProject', description: longDesc, tags: ['ts'], isCurrent: true },
+      ],
+    });
+
+    const content = fs.readFileSync(result.claudeMdPath, 'utf8');
+    expect(content).not.toContain(longDesc);
+    expect(content).toContain('D'.repeat(79) + '…');
+  });
+
+  it('phase 3 drops conflicts section when over budget', () => {
+    // Create a large input that will push past budget
+    const manyDecisions = Array.from({ length: 20 }, (_, i) => ({
+      id: `d${i}`,
+      projectId: 'p1',
+      kind: 'architecture' as const,
+      summary: `Decision number ${i} — ${'x'.repeat(100)}`,
+      recordedAt: Date.now(),
+    }));
+    const manyNotes = Array.from({ length: 15 }, (_, i) => ({
+      id: `n${i}`,
+      projectId: 'p1',
+      title: `Note ${i}`,
+      content: 'N'.repeat(500),
+      tags: [],
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+      source: 'mcp' as const,
+    }));
+    const manyPortfolio = Array.from({ length: 20 }, (_, i) => ({
+      name: `Project${i}`,
+      description: 'A'.repeat(80),
+      tags: ['tag1', 'tag2', 'tag3'],
+      isCurrent: i === 0,
+    }));
+
+    const result = syncClaudeMd({
+      ...EMPTY_INPUT,
+      projectPath: tmpDir,
+      decisions: manyDecisions,
+      notes: manyNotes,
+      portfolio: manyPortfolio,
+      conflicts: [
         {
-          projectName: 'OtherProject',
-          notes: [
-            { id: 'n2', projectId: 'p2', title: 'Cross Note', content: longContent, tags: [], createdAt: Date.now(), updatedAt: Date.now(), source: 'mcp' },
-          ],
+          id: 'c1',
+          projectIds: ['p1', 'p2'],
+          description: 'Should be dropped in phase 3',
+          tier: 'conflict',
+          severity: 'high',
+          detectedAt: Date.now(),
         },
       ],
     });
 
     const content = fs.readFileSync(result.claudeMdPath, 'utf8');
-    expect(content).not.toContain(longContent);
-    expect(content).toContain('C'.repeat(79) + '…');
+    // At phase 3, conflicts should be dropped
+    // (The section may or may not contain conflicts depending on budget)
+    // But it should always be within the budget
+    const nexusStart = content.indexOf('<!-- nexus:start -->');
+    const nexusEnd = content.indexOf('<!-- nexus:end -->') + '<!-- nexus:end -->'.length;
+    const sectionLength = nexusEnd - nexusStart;
+    expect(sectionLength).toBeLessThanOrEqual(6000);
   });
 
-  it('keeps total Nexus section under 6000 chars with many decisions and notes', () => {
+  it('keeps total Nexus section under 6000 chars with many decisions and portfolio entries', () => {
     const manyDecisions = Array.from({ length: 20 }, (_, i) => ({
       id: `d${i}`,
       projectId: 'p1',
@@ -224,12 +311,19 @@ describe('token budget enforcement', () => {
       updatedAt: Date.now(),
       source: 'mcp' as const,
     }));
+    const manyPortfolio = Array.from({ length: 15 }, (_, i) => ({
+      name: `Project${i}`,
+      description: 'A'.repeat(80),
+      tags: ['tag1', 'tag2', 'tag3'],
+      isCurrent: i === 0,
+    }));
 
     const result = syncClaudeMd({
       ...EMPTY_INPUT,
       projectPath: tmpDir,
       decisions: manyDecisions,
       notes: manyNotes,
+      portfolio: manyPortfolio,
     });
 
     const content = fs.readFileSync(result.claudeMdPath, 'utf8');

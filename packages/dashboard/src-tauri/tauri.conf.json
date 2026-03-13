@@ -27,7 +27,7 @@
   },
   "bundle": {
     "active": true,
-    "targets": "all",
+    "targets": ["nsis", "msi"],
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
@@ -35,6 +35,16 @@
       "icons/icon.icns",
       "icons/icon.ico"
     ],
-    "externalBin": ["binaries/nexus-server"]
+    "externalBin": ["binaries/nexus-server"],
+    "windows": {
+      "nsis": {
+        "installMode": "currentUser",
+        "displayLanguageSelector": false,
+        "startMenuFolder": "Nexus",
+        "installerHooks": "./windows/hooks.nsh"
+      }
+    },
+    "shortDescription": "Cross-project intelligence layer for Claude Code",
+    "longDescription": "Nexus — local-first intelligence layer that observes, learns, and coordinates across all Claude Code sessions."
   }
 }

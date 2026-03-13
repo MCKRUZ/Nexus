@@ -2,10 +2,10 @@ use std::sync::{Arc, Mutex};
 use tauri::{
     menu::{Menu, MenuItem, PredefinedMenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
-    AppHandle, Manager,
+    AppHandle, Emitter, Manager,
 };
 use tauri_plugin_autostart::MacosLauncher;
-use tauri_plugin_shell::ShellExt;
+use tauri_plugin_shell::{ShellExt, process::CommandEvent};
 
 const DEFAULT_PORT: u16 = 47340;
 
@@ -22,13 +22,42 @@ fn spawn_server(
     bind_all: bool,
 ) -> Result<tauri_plugin_shell::process::CommandChild, String> {
     let bind_address = if bind_all { "0.0.0.0" } else { "127.0.0.1" };
-    let (_rx, child) = app
+    let (mut rx, child) = app
         .shell()
         .sidecar("nexus-server")
         .map_err(|e| e.to_string())?
         .args(["--port", &port.to_string(), "--bind", bind_address])
         .spawn()
         .map_err(|e| e.to_string())?;
+
+    // Forward sidecar stderr to the frontend as Tauri events
+    let handle = app.clone();
+    tauri::async_runtime::spawn(async move {
+        while let Some(event) = rx.recv().await {
+            match event {
+                CommandEvent::Stderr(line) => {
+                    let text = String::from_utf8_lossy(&line).to_string();
+                    let trimmed = text.trim();
+                    if !trimmed.is_empty() {
+                        eprintln!("[nexus-sidecar stderr] {trimmed}");
+                        let _ = handle.emit("nexus://server-error", trimmed.to_string());
+                    }
+                }
+                CommandEvent::Terminated(status) => {
+                    let msg = format!(
+                        "Server process exited (code: {})",
+                        status.code.map_or("unknown".to_string(), |c| c.to_string())
+                    );
+                    eprintln!("[nexus-sidecar] {msg}");
+                    let _ = handle.emit("nexus://server-error", msg);
+                    break;
+                }
+                // Stdout and other events — ignore
+                _ => {}
+            }
+        }
+    });
+
     Ok(child)
 }
 
@@ -121,6 +150,7 @@ pub fn run() {
                     }
                     Err(e) => {
                         eprintln!("[nexus-desktop] Failed to spawn server: {e}");
+                        let _ = handle.emit("nexus://server-error", format!("Failed to spawn server: {e}"));
                     }
                 }
             }

@@ -56,10 +56,18 @@ export type Pattern = z.infer<typeof PatternSchema>;
 
 // ─── Conflict ────────────────────────────────────────────────────────────────
 
+export const ConflictTierSchema = z.enum(['advisory', 'conflict']);
+export type ConflictTier = z.infer<typeof ConflictTierSchema>;
+
+export const ConflictSeveritySchema = z.enum(['critical', 'high', 'medium', 'low', 'info']);
+export type ConflictSeverity = z.infer<typeof ConflictSeveritySchema>;
+
 export const ConflictSchema = z.object({
   id: z.string().uuid(),
   projectIds: z.array(z.string().uuid()).min(2),
   description: z.string(),
+  tier: ConflictTierSchema,
+  severity: ConflictSeveritySchema,
   detectedAt: z.number(),
   resolvedAt: z.number().optional(),
   resolution: z.string().optional(),
@@ -94,6 +102,33 @@ export const NoteSchema = z.object({
 });
 
 export type Note = z.infer<typeof NoteSchema>;
+
+// ─── Session Events (for compaction recovery) ────────────────────────────────
+
+export const SessionEventTypeSchema = z.enum([
+  'file_read', 'file_write', 'file_edit',
+  'task_create', 'task_update',
+  'error', 'git', 'decision', 'env', 'intent', 'rule',
+  'mcp_tool', 'subagent',
+]);
+export type SessionEventType = z.infer<typeof SessionEventTypeSchema>;
+
+export const SessionEventCategorySchema = z.enum([
+  'file', 'task', 'error', 'git', 'env', 'decision', 'intent', 'rule', 'tool', 'subagent',
+]);
+export type SessionEventCategory = z.infer<typeof SessionEventCategorySchema>;
+
+export const SessionEventPrioritySchema = z.union([z.literal(1), z.literal(2), z.literal(3)]);
+export type SessionEventPriority = z.infer<typeof SessionEventPrioritySchema>;
+
+export const ClassifiedEventSchema = z.object({
+  type: SessionEventTypeSchema,
+  category: SessionEventCategorySchema,
+  priority: SessionEventPrioritySchema,
+  data: z.string().max(300),
+  source: z.string(),
+});
+export type ClassifiedEvent = z.infer<typeof ClassifiedEventSchema>;
 
 // ─── Audit Log ────────────────────────────────────────────────────────────────
 

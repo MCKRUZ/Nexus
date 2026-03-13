@@ -13,13 +13,16 @@ import {
   createProject,
   removeProject,
   touchProject,
+  updateProjectParentId,
   type CreateProjectParams,
 } from './repositories/project.js';
 import {
   searchDecisions,
   findDecisionsByProject,
   createDecision,
+  supersedeDuplicateDecisions,
   type CreateDecisionParams,
+  type DeduplicateResult,
 } from './repositories/decision.js';
 import {
   getAuditEntries,
@@ -33,14 +36,16 @@ import {
   searchPatterns,
   findPatternsByProject,
   upsertPattern,
+  deduplicatePatterns,
   type UpsertPatternParams,
+  type PatternDeduplicateResult,
 } from './repositories/pattern.js';
 import {
   getPreference,
   setPreference,
   listPreferences,
 } from './repositories/preference.js';
-import { checkConflicts, createConflict, resolveConflict } from './repositories/conflict.js';
+import { checkConflicts, createConflict, resolveConflict, dismissAdvisory } from './repositories/conflict.js';
 import {
   findNotesByProject,
   findNoteById,
@@ -50,12 +55,20 @@ import {
   deleteNote,
   type UpsertNoteParams,
 } from './repositories/note.js';
-import type { Project, Decision, Pattern, Preference, Conflict, Note, AuditEntry } from './types/index.js';
+import type { Project, Decision, Pattern, Preference, Conflict, Note, AuditEntry, ConflictTier, ConflictSeverity } from './types/index.js';
 import type { DecisionKind } from './types/index.js';
+import { runDoctor, type DoctorReport } from './diagnostics/doctor.js';
+import { emitPipelineEvent, getPipelineStats, getLlmCosts, type PipelineEvent, type PipelineStats, type LlmCostSummary } from './diagnostics/pipeline.js';
+import { runDoctorFix, type DoctorFixResult } from './diagnostics/doctor-fix.js';
+import { syncClaudeMd } from './sync/claude-md-sync.js';
+import type { PortfolioEntry } from './sync/claude-md-sync.js';
+import fs from 'node:fs';
 
 export type { AuditQueryOptions, AuditCountByDay, AuditCountByOperation };
 
 export type { UpsertNoteParams };
+export type { DeduplicateResult };
+export type { PatternDeduplicateResult };
 
 export interface QueryOptions {
   query: string;
@@ -120,6 +133,14 @@ export class NexusService {
     touchProject(this.db, id);
   }
 
+  setProjectParent(
+    projectId: string,
+    parentId: string,
+    source: 'cli' | 'mcp' | 'daemon' = 'cli',
+  ): void {
+    updateProjectParentId(this.db, projectId, parentId, source);
+  }
+
   // ─── Decisions ─────────────────────────────────────────────────────────────
 
   getDecisionsForProject(projectId: string): Decision[] {
@@ -133,6 +154,42 @@ export class NexusService {
     return createDecision(this.db, params, source);
   }
 
+  deduplicateDecisions(
+    projectId: string,
+    threshold?: number,
+    source: 'cli' | 'mcp' | 'daemon' = 'cli',
+    dryRun = false,
+  ): DeduplicateResult {
+    return supersedeDuplicateDecisions(this.db, projectId, threshold, source, dryRun);
+  }
+
+  deduplicateAllDecisions(
+    threshold?: number,
+    source: 'cli' | 'mcp' | 'daemon' = 'cli',
+    dryRun = false,
+  ): { total: DeduplicateResult; perProject: Array<{ projectName: string; result: DeduplicateResult }> } {
+    const projects = findAllProjects(this.db);
+    const perProject: Array<{ projectName: string; result: DeduplicateResult }> = [];
+    let totalKept = 0;
+    let totalSuperseded = 0;
+    const allDetails: DeduplicateResult['details'] = [];
+
+    for (const project of projects) {
+      const result = supersedeDuplicateDecisions(this.db, project.id, threshold, source, dryRun);
+      if (result.superseded > 0) {
+        perProject.push({ projectName: project.name, result });
+      }
+      totalKept += result.kept;
+      totalSuperseded += result.superseded;
+      allDetails.push(...result.details);
+    }
+
+    return {
+      total: { kept: totalKept, superseded: totalSuperseded, details: allDetails },
+      perProject,
+    };
+  }
+
   // ─── Patterns ──────────────────────────────────────────────────────────────
 
   getPatternsForProject(projectId: string): Pattern[] {
@@ -144,6 +201,42 @@ export class NexusService {
     source: 'cli' | 'mcp' | 'daemon' = 'daemon',
   ): Pattern {
     return upsertPattern(this.db, params, source);
+  }
+
+  deduplicatePatterns(
+    projectId: string,
+    threshold?: number,
+    source: 'cli' | 'mcp' | 'daemon' = 'cli',
+    dryRun = false,
+  ): PatternDeduplicateResult {
+    return deduplicatePatterns(this.db, projectId, threshold, source, dryRun);
+  }
+
+  deduplicateAllPatterns(
+    threshold?: number,
+    source: 'cli' | 'mcp' | 'daemon' = 'cli',
+    dryRun = false,
+  ): { total: PatternDeduplicateResult; perProject: Array<{ projectName: string; result: PatternDeduplicateResult }> } {
+    const projects = findAllProjects(this.db);
+    const perProject: Array<{ projectName: string; result: PatternDeduplicateResult }> = [];
+    let totalKept = 0;
+    let totalMerged = 0;
+    const allDetails: PatternDeduplicateResult['details'] = [];
+
+    for (const project of projects) {
+      const result = deduplicatePatterns(this.db, project.id, threshold, source, dryRun);
+      if (result.merged > 0) {
+        perProject.push({ projectName: project.name, result });
+      }
+      totalKept += result.kept;
+      totalMerged += result.merged;
+      allDetails.push(...result.details);
+    }
+
+    return {
+      total: { kept: totalKept, merged: totalMerged, details: allDetails },
+      perProject,
+    };
   }
 
   // ─── Preferences ───────────────────────────────────────────────────────────
@@ -179,8 +272,20 @@ export class NexusService {
     projectIds: string[],
     description: string,
     source: 'cli' | 'mcp' | 'daemon' = 'daemon',
+    tier: ConflictTier = 'conflict',
+    severity: ConflictSeverity = 'medium',
   ): Conflict {
-    return createConflict(this.db, projectIds, description, source);
+    return createConflict(this.db, projectIds, description, source, tier, severity);
+  }
+
+  recordInsight(
+    projectIds: string[],
+    description: string,
+    tier: ConflictTier,
+    severity: ConflictSeverity,
+    source: 'cli' | 'mcp' | 'daemon' = 'daemon',
+  ): Conflict {
+    return createConflict(this.db, projectIds, description, source, tier, severity);
   }
 
   resolveConflict(
@@ -189,6 +294,13 @@ export class NexusService {
     source: 'cli' | 'mcp' | 'daemon' = 'cli',
   ): boolean {
     return resolveConflict(this.db, conflictId, resolution, source);
+  }
+
+  dismissAdvisory(
+    conflictId: string,
+    source: 'cli' | 'mcp' | 'daemon' = 'cli',
+  ): boolean {
+    return dismissAdvisory(this.db, conflictId, source);
   }
 
   // ─── Notes ─────────────────────────────────────────────────────────────────
@@ -256,6 +368,83 @@ export class NexusService {
       : [];
 
     return { decisions, patterns, preferences };
+  }
+
+  // ─── Diagnostics ─────────────────────────────────────────────────────────────
+
+  getDoctorReport(): DoctorReport {
+    return runDoctor(this.db);
+  }
+
+  syncProject(projectId: string): boolean {
+    const project = findProjectById(this.db, projectId);
+    if (!project) return false;
+    if (!fs.existsSync(project.path)) return false;
+
+    const allProjects = findAllProjects(this.db);
+    const decisions = this.getDecisionsForProject(project.id);
+    const notes = this.getNotesForProject(project.id);
+    const { conflicts } = this.checkConflicts([project.id]);
+
+    const portfolio: PortfolioEntry[] = allProjects.map((p) => ({
+      name: p.name,
+      description: findNoteByTitle(this.db, p.id, 'Project Overview')?.content ?? '',
+      tags: p.tags ?? [],
+      isCurrent: p.id === project.id,
+    }));
+
+    try {
+      const result = syncClaudeMd({
+        projectPath: project.path,
+        notes,
+        portfolio,
+        decisions,
+        conflicts: conflicts as Conflict[],
+      });
+      if (result.updated) {
+        emitPipelineEvent(this.db, project.id, 'pipeline.sync.success');
+      }
+      return result.updated;
+    } catch {
+      emitPipelineEvent(this.db, project.id, 'pipeline.sync.fail');
+      return false;
+    }
+  }
+
+  runDoctorFix(): DoctorFixResult {
+    return runDoctorFix(this);
+  }
+
+  getPipelineStats(projectId?: string, since?: number): PipelineStats {
+    return getPipelineStats(this.db, projectId, since);
+  }
+
+  getLlmCosts(since?: number): LlmCostSummary {
+    return getLlmCosts(this.db, since);
+  }
+
+  emitPipelineEvent(
+    projectId: string | undefined,
+    operation: PipelineEvent,
+    metadata?: Record<string, string>,
+  ): void {
+    emitPipelineEvent(this.db, projectId, operation, metadata);
+  }
+
+  // ─── Path normalization migration ─────────────────────────────────────────
+
+  /** Migrate all project paths in DB from backslashes to forward slashes. */
+  normalizeAllProjectPaths(): number {
+    const projects = findAllProjects(this.db);
+    let migrated = 0;
+    for (const p of projects) {
+      const normalized = p.path.replace(/\\/g, '/');
+      if (normalized !== p.path) {
+        this.db.prepare('UPDATE projects SET path = ? WHERE id = ?').run(normalized, p.id);
+        migrated++;
+      }
+    }
+    return migrated;
   }
 
   // ─── Cross-project dependency graph ────────────────────────────────────────

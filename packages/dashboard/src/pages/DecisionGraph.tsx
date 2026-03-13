@@ -96,7 +96,7 @@ function buildGraph(
   results: Array<{ project: Project; decisions: Decision[] }>,
 ) {
   const width = svgEl.clientWidth || 800;
-  const height = svgEl.clientHeight || 500;
+  const height = svgEl.clientHeight || 600;
 
   const nodes: GraphNode[] = [];
   const links: GraphLink[] = [];
@@ -112,6 +112,7 @@ function buildGraph(
 
   const svg = d3.select(svgEl);
   svg.selectAll('*').remove();
+  svg.attr('width', width).attr('height', height);
 
   svg.append('defs').append('marker')
     .attr('id', 'arrow')
@@ -124,13 +125,49 @@ function buildGraph(
     .attr('fill', '#30363d')
     .attr('d', 'M0,-5L10,0L0,5');
 
+  // Container group that zoom/pan transforms
+  const g = svg.append('g');
+
+  // Zoom + pan behavior
+  const zoom = d3.zoom<SVGSVGElement, unknown>()
+    .scaleExtent([0.2, 5])
+    .on('zoom', (event) => {
+      g.attr('transform', event.transform);
+    });
+
+  svg.call(zoom);
+
+  // Fit-to-content after simulation settles
+  const fitToContent = () => {
+    if (nodes.length === 0) return;
+    let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+    for (const n of nodes) {
+      const nx = n.x ?? 0;
+      const ny = n.y ?? 0;
+      x0 = Math.min(x0, nx - n.r - 20);
+      y0 = Math.min(y0, ny - n.r - 20);
+      x1 = Math.max(x1, nx + n.r + 20);
+      y1 = Math.max(y1, ny + n.r + 20);
+    }
+    const bw = x1 - x0;
+    const bh = y1 - y0;
+    if (bw <= 0 || bh <= 0) return;
+    const scale = Math.min(width / bw, height / bh, 1.5) * 0.85;
+    const tx = (width - bw * scale) / 2 - x0 * scale;
+    const ty = (height - bh * scale) / 2 - y0 * scale;
+    svg.transition().duration(400).call(
+      zoom.transform,
+      d3.zoomIdentity.translate(tx, ty).scale(scale),
+    );
+  };
+
   const sim = d3.forceSimulation<GraphNode>(nodes)
     .force('link', d3.forceLink<GraphNode, GraphLink>(links).id(n => n.id).distance(80))
     .force('charge', d3.forceManyBody().strength(-200))
     .force('center', d3.forceCenter(width / 2, height / 2))
     .force('collision', d3.forceCollide<GraphNode>(n => n.r + 6));
 
-  const link = svg.append('g')
+  const link = g.append('g')
     .selectAll('line')
     .data(links)
     .join('line')
@@ -138,7 +175,7 @@ function buildGraph(
     .attr('stroke-width', 1)
     .attr('marker-end', 'url(#arrow)');
 
-  const node = svg.append('g')
+  const node = g.append('g')
     .selectAll<SVGCircleElement, GraphNode>('circle')
     .data(nodes)
     .join('circle')
@@ -160,7 +197,7 @@ function buildGraph(
         }),
     );
 
-  const label = svg.append('g')
+  const label = g.append('g')
     .selectAll<SVGTextElement, GraphNode>('text')
     .data(nodes)
     .join('text')
@@ -181,4 +218,7 @@ function buildGraph(
     node.attr('cx', n => n.x ?? 0).attr('cy', n => n.y ?? 0);
     label.attr('x', n => n.x ?? 0).attr('y', n => n.y ?? 0);
   });
+
+  // Auto-fit once simulation is nearly settled
+  sim.on('end', fitToContent);
 }

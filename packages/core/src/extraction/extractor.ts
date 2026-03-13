@@ -4,39 +4,16 @@
  * - Architectural decisions
  * - Code patterns
  * - Developer preferences
- * - Potential conflicts
  *
  * SECURITY: filterSecrets() is applied to all content BEFORE sending to the LLM.
  * No file contents are ever sent — only filtered summaries.
  */
 
-import Anthropic from '@anthropic-ai/sdk';
 import { filterSecrets } from '../security/index.js';
-import { resolveAnthropicAuth } from '../config/index.js';
+import { readConfig } from '../config/index.js';
+import { createProvider } from '../llm/index.js';
+import { smartTruncate } from '../utils/truncate.js';
 import type { DecisionKind } from '../types/index.js';
-
-// Lazy client — created on first use so missing config throws at call time, not import time.
-let _client: Anthropic | null = null;
-
-function getClient(): Anthropic {
-  if (!_client) {
-    const auth = resolveAnthropicAuth();
-    if (!auth.apiKey && !auth.authToken) {
-      throw new Error(
-        'Anthropic auth not configured. Options:\n' +
-        '  1. Set ANTHROPIC_API_KEY env var\n' +
-        '  2. Add "anthropicApiKey" to ~/.nexus/config.json\n' +
-        '  3. Log in to Claude Code (`claude login`) — Nexus can use your OAuth token',
-      );
-    }
-    _client = new Anthropic({
-      ...(auth.apiKey ? { apiKey: auth.apiKey } : {}),
-      ...(auth.authToken ? { authToken: auth.authToken } : {}),
-      ...(auth.baseURL ? { baseURL: auth.baseURL } : {}),
-    });
-  }
-  return _client;
-}
 
 export interface ExtractedDecision {
   kind: DecisionKind;
@@ -56,11 +33,19 @@ export interface ExtractedPreference {
   value: string;
 }
 
+export interface LlmUsageInfo {
+  provider: string;
+  model?: string | undefined;
+  inputTokens?: number | undefined;
+  outputTokens?: number | undefined;
+}
+
 export interface ExtractionResult {
   decisions: ExtractedDecision[];
   patterns: ExtractedPattern[];
   preferences: ExtractedPreference[];
   rawResponse?: string;
+  llmUsage?: LlmUsageInfo;
 }
 
 const EXTRACTION_SYSTEM_PROMPT = `You are an architectural knowledge extractor for a developer intelligence system.
@@ -109,30 +94,32 @@ export async function extractFromTranscript(
     console.warn(`[nexus-extractor] Redacted ${redactedCount} potential secrets from transcript before extraction`);
   }
 
-  // Truncate to avoid excessive token usage
-  const truncated = filtered.length > maxChars
-    ? filtered.slice(-maxChars) // take the END (most recent context is most relevant)
-    : filtered;
+  // Truncate to avoid excessive token usage — 60/40 head/tail split preserves both
+  // the beginning (setup context) and the end (errors, conclusions)
+  const { text: truncated } = smartTruncate(filtered, maxChars);
 
-  const message = await getClient().messages.create({
-    model: 'claude-haiku-4-5-20251001', // cheapest model for extraction
-    max_tokens: 1024,
+  const config = readConfig();
+  const provider = createProvider(config);
+
+  const result = await provider.chatCompletion({
     system: EXTRACTION_SYSTEM_PROMPT,
-    messages: [
-      {
-        role: 'user',
-        content: `Extract architectural knowledge from this Claude Code session transcript:\n\n${truncated}`,
-      },
-    ],
+    userMessage: `Extract architectural knowledge from this Claude Code session transcript:\n\n${truncated}`,
+    maxTokens: 1024,
   });
 
-  const rawResponse = message.content[0]?.type === 'text' ? message.content[0].text : '';
+  const rawResponse = result.text;
+  const llmUsage: LlmUsageInfo = {
+    provider: provider.name,
+    model: result.model,
+    inputTokens: result.usage?.inputTokens,
+    outputTokens: result.usage?.outputTokens,
+  };
 
   try {
     // Extract JSON from response (it might be wrapped in markdown)
     const jsonMatch = rawResponse.match(/\{[\s\S]*\}/);
     if (!jsonMatch) {
-      return { decisions: [], patterns: [], preferences: [], rawResponse };
+      return { decisions: [], patterns: [], preferences: [], rawResponse, llmUsage };
     }
 
     const parsed = JSON.parse(jsonMatch[0]) as ExtractionResult;
@@ -141,9 +128,10 @@ export async function extractFromTranscript(
       patterns: parsed.patterns ?? [],
       preferences: parsed.preferences ?? [],
       rawResponse,
+      llmUsage,
     };
   } catch {
-    return { decisions: [], patterns: [], preferences: [], rawResponse };
+    return { decisions: [], patterns: [], preferences: [], rawResponse, llmUsage };
   }
 }
 
