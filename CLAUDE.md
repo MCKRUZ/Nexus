@@ -124,7 +124,7 @@ When compacting, preserve:
 ## Nexus Intelligence
 
 *Auto-updated by Nexus — do not edit this section manually.*
-*Last sync: 2026-03-13*
+*Last sync: 2026-03-17*
 
 ### Portfolio
 | Project | Description | Tech |

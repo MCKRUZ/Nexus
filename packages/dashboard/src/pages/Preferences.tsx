@@ -52,6 +52,18 @@ export function Preferences() {
 
   return (
     <div className="stacked">
+      {/* Intro */}
+      <div className="card" style={{ padding: '12px 16px' }}>
+        <p style={{ margin: 0, color: 'var(--text2)', fontSize: 13, lineHeight: 1.5 }}>
+          Persistent key-value settings that Claude reads at runtime via <code style={{ background: 'var(--bg3)', padding: '1px 5px', borderRadius: 4, fontSize: 12 }}>nexus_preferences</code>.
+          {' '}<strong style={{ color: 'var(--text)' }}>Global</strong> preferences apply everywhere;
+          {' '}<strong style={{ color: 'var(--text)' }}>project-scoped</strong> ones override per-project.
+          {' '}Examples: <code style={{ background: 'var(--bg3)', padding: '1px 5px', borderRadius: 4, fontSize: 12 }}>default_model</code>,
+          {' '}<code style={{ background: 'var(--bg3)', padding: '1px 5px', borderRadius: 4, fontSize: 12 }}>code_style</code>,
+          {' '}<code style={{ background: 'var(--bg3)', padding: '1px 5px', borderRadius: 4, fontSize: 12 }}>test_framework</code>
+        </p>
+      </div>
+
       {/* Filters */}
       <div style={{ display: 'flex', gap: 8 }}>
         {(['all', 'global', 'project'] as const).map(s => (

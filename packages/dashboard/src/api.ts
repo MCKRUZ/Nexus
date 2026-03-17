@@ -84,7 +84,7 @@ export interface ConflictCheck {
   hasConflicts: boolean;
   conflicts: Conflict[];
   advisories: Conflict[];
-  potentialConflicts: Array<{ topic: string; description: string }>;
+  potentialConflicts: Array<{ topic: string; description: string; projectA: string; projectB: string; summaryA: string; summaryB: string }>;
 }
 
 // ─── Native session types ──────────────────────────────────────────────────────
@@ -534,6 +534,57 @@ export interface LlmCostSummary {
   byProvider: Array<{ provider: string; model: string; calls: number; costUsd: number }>;
 }
 
+// ─── Claude Config types ────────────────────────────────────────────────────
+
+export interface ClaudeConfigRule {
+  name: string;
+  file: string;
+  body: string;
+  [key: string]: string;
+}
+
+export interface ClaudeConfigSkill {
+  name: string;
+  file: string;
+  isSymlink: boolean;
+  body: string;
+  [key: string]: string | boolean;
+}
+
+export interface ClaudeConfigAgent {
+  name: string;
+  file: string;
+  body: string;
+  [key: string]: string;
+}
+
+export interface ClaudeConfigCommand {
+  name: string;
+  file: string;
+  body: string;
+  [key: string]: string;
+}
+
+export interface ClaudeGlobalConfig {
+  settings: Record<string, unknown>;
+  rules: ClaudeConfigRule[];
+  skills: ClaudeConfigSkill[];
+  agents: ClaudeConfigAgent[];
+  commands: ClaudeConfigCommand[];
+  hooks: Record<string, unknown>;
+  mcpServers: Record<string, unknown>;
+  permissions: { allow: unknown[]; deny: unknown[] };
+}
+
+export interface ClaudeProjectConfig {
+  project: { id: string; name: string; path: string };
+  claudeMd: string | null;
+  rules: ClaudeConfigRule[];
+  agents: ClaudeConfigAgent[];
+  commands: ClaudeConfigCommand[];
+  localSettings: Record<string, unknown> | null;
+}
+
 async function get<T>(path: string): Promise<T> {
   const res = await fetch(BASE + path);
   if (!res.ok) {
@@ -693,6 +744,12 @@ export const api = {
       get<SessionEvent[]>(`/sessions/${encodeURIComponent(sessionId)}/events?limit=${limit}`),
     snapshot: (sessionId: string) =>
       get<{ snapshot: string }>(`/sessions/${encodeURIComponent(sessionId)}/snapshot`),
+  },
+  claudeConfig: {
+    global: () => get<ClaudeGlobalConfig>('/claude-config/global'),
+    project: (id: string) => get<ClaudeProjectConfig>(`/claude-config/project/${id}`),
+    file: (filePath: string) =>
+      get<{ path: string; content: string }>(`/claude-config/file?path=${encodeURIComponent(filePath)}`),
   },
   langfuse: {
     status: () => get<{ configured: boolean }>('/langfuse/status'),

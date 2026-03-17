@@ -294,6 +294,7 @@ If you run a self-hosted [Langfuse](https://langfuse.com) instance, add credenti
 | **Preferences** | Global and per-project preference editor |
 | **Search** | Full-text search across all knowledge |
 | **Observability** | Native Claude Code sessions + optional Langfuse traces/cost charts |
+| **Claude Config** | Unified view of all Claude Code configuration — global settings, MCP servers (with hub sub-server discovery), rules, skills, agents, commands, hooks, permissions, and per-project `.claude/` contents |
 | **Settings** | Server bind mode, autostart on login, port display |
 
 ---

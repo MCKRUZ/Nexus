@@ -313,6 +313,46 @@ tr:hover td { background: var(--bg3); }
 }
 .filter-input::placeholder { color: var(--text2); }
 
+/* ── Claude Config ───────────────────────────────────────────────────────── */
+.json-viewer {
+  font-family: var(--mono);
+  font-size: 12px;
+  line-height: 1.6;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 12px 16px;
+  overflow: auto;
+  max-height: 600px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  color: var(--text);
+}
+
+.config-file-card {
+  background: var(--bg2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 12px 16px;
+  cursor: pointer;
+  transition: border-color 0.15s, background 0.15s;
+}
+.config-file-card:hover { border-color: var(--accent); background: var(--bg3); }
+
+.config-category {
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--text2);
+  margin-top: 8px;
+}
+
+.view-toggle {
+  display: flex;
+  gap: 4px;
+}
+
 /* ── Reduce motion ───────────────────────────────────────────────────────── */
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after {

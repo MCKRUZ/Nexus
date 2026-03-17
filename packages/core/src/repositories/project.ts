@@ -136,3 +136,47 @@ export function updateProjectParentId(
 export function touchProject(db: NexusDb, id: string): void {
   db.prepare('UPDATE projects SET last_seen_at = ? WHERE id = ?').run(Date.now(), id);
 }
+
+/**
+ * Return the set of project IDs that are "related" to the given projectId:
+ *  - shares the same parentId (siblings)
+ *  - is a parent or child of the given project
+ *  - shares at least one tag
+ */
+export function findRelatedProjectIds(db: NexusDb, projectId: string): Set<string> {
+  const project = findProjectById(db, projectId);
+  if (!project) return new Set();
+
+  const related = new Set<string>();
+
+  // Parent
+  if (project.parentId) {
+    related.add(project.parentId);
+    // Siblings (other children of the same parent)
+    const siblings = db
+      .prepare('SELECT id FROM projects WHERE parent_id = ? AND id != ?')
+      .all(project.parentId, projectId) as Array<{ id: string }>;
+    for (const s of siblings) related.add(s.id);
+  }
+
+  // Children
+  const children = db
+    .prepare('SELECT id FROM projects WHERE parent_id = ?')
+    .all(projectId) as Array<{ id: string }>;
+  for (const c of children) related.add(c.id);
+
+  // Shared tags
+  if (project.tags.length > 0) {
+    const allProjects = db
+      .prepare('SELECT id, tags FROM projects WHERE id != ?')
+      .all(projectId) as Array<{ id: string; tags: string }>;
+    for (const row of allProjects) {
+      const tags = JSON.parse(row.tags) as string[];
+      if (tags.some((t) => project.tags.includes(t))) {
+        related.add(row.id);
+      }
+    }
+  }
+
+  return related;
+}

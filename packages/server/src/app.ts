@@ -1042,6 +1042,335 @@ app.get('/api/langfuse/*', async (c) => {
   }
 });
 
+// ─── Claude Config ────────────────────────────────────────────────────────────
+
+function readFileSafe(filePath: string): string | null {
+  try { return fs.readFileSync(filePath, 'utf-8'); } catch { return null; }
+}
+
+function readDirSafe(dir: string): string[] {
+  try { return fs.readdirSync(dir); } catch { return []; }
+}
+
+function maskEnvValues(env: Record<string, string>): Record<string, string> {
+  const masked: Record<string, string> = {};
+  for (const [k, v] of Object.entries(env)) {
+    masked[k] = typeof v === 'string' && v.length > 4 ? v.slice(0, 4) + '****' : '****';
+  }
+  return masked;
+}
+
+function parseFrontMatter(content: string): { meta: Record<string, string>; body: string } {
+  const match = content.match(/^---\r?\n([\s\S]*?)\r?\n---\r?\n?([\s\S]*)$/);
+  if (!match) return { meta: {}, body: content };
+  const meta: Record<string, string> = {};
+  for (const line of (match[1] ?? '').split(/\r?\n/)) {
+    const idx = line.indexOf(':');
+    if (idx > 0) meta[line.slice(0, idx).trim()] = line.slice(idx + 1).trim();
+  }
+  return { meta, body: match[2] ?? '' };
+}
+
+interface HubSubServer { namespace: string; name: string; command: string; args: string[] }
+
+function parseHubSubServers(pythonSource: string): HubSubServer[] {
+  // Step 1: Parse variable = create_proxy(StdioTransport(command="X", args=[...]))
+  const proxyMap = new Map<string, { command: string; args: string[] }>();
+  const proxyPattern = /(\w+)\s*=\s*create_proxy\s*\(\s*StdioTransport\s*\(\s*command\s*=\s*["']([^"']+)["']\s*,\s*args\s*=\s*\[([^\]]*)\]/g;
+  let m: RegExpExecArray | null;
+  while ((m = proxyPattern.exec(pythonSource)) !== null) {
+    const argStr = m[3] ?? '';
+    const args = [...argStr.matchAll(/["']([^"']+)["']/g)].map((a) => a[1] ?? '');
+    proxyMap.set(m[1] ?? '', { command: m[2] ?? '', args });
+  }
+
+  // Step 2: Parse mcp.mount(varname, namespace="ns")
+  const servers: HubSubServer[] = [];
+  const mountPattern = /\.mount\s*\(\s*(\w+)\s*,\s*namespace\s*=\s*["']([^"']+)["']/g;
+  while ((m = mountPattern.exec(pythonSource)) !== null) {
+    const varName = m[1] ?? '';
+    const ns = m[2] ?? '';
+    const proxy = proxyMap.get(varName);
+    servers.push({
+      namespace: ns,
+      name: varName,
+      command: proxy?.command ?? '',
+      args: proxy?.args ?? [],
+    });
+  }
+
+  // Fallback: MCPClient pattern
+  if (servers.length === 0) {
+    const clientPattern = /(\w+)\s*=\s*MCPClient\s*\([^)]*?StdioTransport\s*\(\s*command\s*=\s*["']([^"']+)["'][^)]*?args\s*=\s*\[([^\]]*)\]/g;
+    while ((m = clientPattern.exec(pythonSource)) !== null) {
+      const argStr = m[3] ?? '';
+      const args = [...argStr.matchAll(/["']([^"']+)["']/g)].map((a) => a[1] ?? '');
+      proxyMap.set(m[1] ?? '', { command: m[2] ?? '', args });
+    }
+    const mountPattern2 = /\.mount\s*\(\s*["']([^"']+)["']\s*,\s*(\w+)/g;
+    while ((m = mountPattern2.exec(pythonSource)) !== null) {
+      const ns = m[1] ?? '';
+      const varName = m[2] ?? '';
+      const proxy = proxyMap.get(varName);
+      servers.push({ namespace: ns, name: varName, command: proxy?.command ?? '', args: proxy?.args ?? [] });
+    }
+  }
+  return servers;
+}
+
+function parseYamlServers(base: string | null, local: string | null): HubSubServer[] {
+  const servers: HubSubServer[] = [];
+  const seen = new Set<string>();
+  for (const yaml of [base, local]) {
+    if (!yaml) continue;
+    // Simple YAML parser for servers: block — matches indented server entries
+    // Pattern: "  name:\n    command: X\n    args: [...]"
+    const serverBlock = /^  (\w[\w-]*):\s*$/gm;
+    let match: RegExpExecArray | null;
+    while ((match = serverBlock.exec(yaml)) !== null) {
+      const name = match[1] ?? '';
+      const blockStart = match.index + match[0].length;
+      // Find end of block (next unindented line or EOF)
+      const rest = yaml.slice(blockStart);
+      const blockEnd = rest.search(/^\S/m);
+      const block = blockEnd >= 0 ? rest.slice(0, blockEnd) : rest;
+      // Extract command
+      const cmdMatch = block.match(/command:\s*(\S+)/);
+      const command = cmdMatch?.[1] ?? '';
+      // Extract args (simple array format)
+      const argsMatch = block.match(/args:\s*\[([^\]]*)\]/);
+      const args = argsMatch
+        ? [...(argsMatch[1] ?? '').matchAll(/"([^"]*)"|'([^']*)'/g)].map((m) => m[1] ?? m[2] ?? '')
+        : [];
+      seen.add(name);
+      // Upsert: local overrides base
+      const existing = servers.findIndex((s) => s.namespace === name);
+      if (existing >= 0) {
+        servers[existing] = { namespace: name, name, command, args };
+      } else {
+        servers.push({ namespace: name, name, command, args });
+      }
+    }
+  }
+  return servers;
+}
+
+app.get('/api/claude-config/global', (c) => {
+  const home = os.homedir();
+  const claudeDir = path.join(home, '.claude');
+
+  // settings.json
+  const rawSettings = readFileSafe(path.join(claudeDir, 'settings.json'));
+  let settings: Record<string, unknown> = {};
+  if (rawSettings) {
+    try {
+      settings = JSON.parse(rawSettings);
+      // Mask env values
+      if (settings['env'] && typeof settings['env'] === 'object') {
+        settings = { ...settings, env: maskEnvValues(settings['env'] as Record<string, string>) };
+      }
+    } catch { /* invalid JSON */ }
+  }
+
+  // Rules
+  const rulesDir = path.join(claudeDir, 'rules');
+  const rules = readDirSafe(rulesDir)
+    .filter((f) => f.endsWith('.md'))
+    .map((f) => {
+      const content = readFileSafe(path.join(rulesDir, f)) ?? '';
+      const { meta, body } = parseFrontMatter(content);
+      return { name: f.replace(/\.md$/, ''), file: f, ...meta, body: body.slice(0, 500) };
+    });
+
+  // Skills
+  const skillsDir = path.join(claudeDir, 'skills');
+  const skills = readDirSafe(skillsDir)
+    .filter((d) => {
+      try { return fs.statSync(path.join(skillsDir, d)).isDirectory(); } catch { return false; }
+    })
+    .map((d) => {
+      const skillPath = path.join(skillsDir, d, 'SKILL.md');
+      const content = readFileSafe(skillPath) ?? '';
+      const { meta, body } = parseFrontMatter(content);
+      let isSymlink = false;
+      try { isSymlink = fs.lstatSync(path.join(skillsDir, d)).isSymbolicLink(); } catch { /* */ }
+      return { name: d, file: `skills/${d}/SKILL.md`, isSymlink, ...meta, body: body.slice(0, 300) };
+    });
+
+  // Agents (look for AGENT.md first, fall back to any .md file in the dir)
+  const agentsDir = path.join(claudeDir, 'agents');
+  const agents = readDirSafe(agentsDir)
+    .filter((d) => {
+      try { return fs.statSync(path.join(agentsDir, d)).isDirectory(); } catch { return false; }
+    })
+    .flatMap((d) => {
+      const dirPath = path.join(agentsDir, d);
+      const agentMd = readFileSafe(path.join(dirPath, 'AGENT.md'));
+      if (agentMd !== null) {
+        const { meta, body } = parseFrontMatter(agentMd);
+        return [{ name: d, file: `agents/${d}/AGENT.md`, ...meta, body: body.slice(0, 300) }];
+      }
+      // No AGENT.md — list individual .md files as sub-agents
+      return readDirSafe(dirPath)
+        .filter((f) => f.endsWith('.md'))
+        .map((f) => {
+          const content = readFileSafe(path.join(dirPath, f)) ?? '';
+          const { meta, body } = parseFrontMatter(content);
+          return { name: `${d}/${f.replace(/\.md$/, '')}`, file: `agents/${d}/${f}`, ...meta, body: body.slice(0, 300) };
+        });
+    });
+
+  // Commands
+  const commandsDir = path.join(claudeDir, 'commands');
+  const commands = readDirSafe(commandsDir)
+    .filter((f) => f.endsWith('.md'))
+    .map((f) => {
+      const content = readFileSafe(path.join(commandsDir, f)) ?? '';
+      const { meta, body } = parseFrontMatter(content);
+      return { name: f.replace(/\.md$/, ''), file: f, ...meta, body: body.slice(0, 300) };
+    });
+
+  // Extract hooks, mcpServers, permissions from settings
+  const hooks = (settings['hooks'] ?? {}) as Record<string, unknown>;
+  const rawMcpServers = (settings['mcpServers'] ?? {}) as Record<string, Record<string, unknown>>;
+  const rawPerms = settings['permissions'];
+  let permAllow: unknown[] = [];
+  let permDeny: unknown[] = [];
+  if (rawPerms && typeof rawPerms === 'object' && !Array.isArray(rawPerms)) {
+    const p = rawPerms as Record<string, unknown>;
+    permAllow = Array.isArray(p['allow']) ? p['allow'] : [];
+    permDeny = Array.isArray(p['deny']) ? p['deny'] : [];
+  } else if (Array.isArray(rawPerms)) {
+    permAllow = rawPerms;
+  }
+  if (Array.isArray(settings['allowedTools'])) permAllow = [...permAllow, ...(settings['allowedTools'] as unknown[])];
+  if (Array.isArray(settings['denyTools'])) permDeny = [...permDeny, ...(settings['denyTools'] as unknown[])];
+  const permissions = { allow: permAllow, deny: permDeny };
+
+  // Discover hub sub-servers by parsing Python server files
+  const mcpServers: Record<string, unknown> = {};
+  for (const [name, cfg] of Object.entries(rawMcpServers)) {
+    const desc = String(cfg['description'] ?? '');
+    const args = cfg['args'] as string[] | undefined;
+    // Detect hub pattern: find --directory arg value and check for servers.yaml
+    let hubDir: string | undefined;
+    if (args) {
+      const dirIdx = args.indexOf('--directory');
+      hubDir = dirIdx >= 0 ? args[dirIdx + 1] : undefined;
+    }
+    const serversYaml = hubDir ? readFileSafe(path.join(hubDir, 'servers.yaml')) : null;
+    const serversLocalYaml = hubDir ? readFileSafe(path.join(hubDir, 'servers.local.yaml')) : null;
+    const serverPy = hubDir ? (readFileSafe(path.join(hubDir, 'server.py')) ?? (() => {
+      const pyArg = args?.find((a) => a.endsWith('.py'));
+      return pyArg ? readFileSafe(path.join(hubDir!, pyArg)) : null;
+    })()) : null;
+    const isHub = desc.toLowerCase().includes('hub') || (serverPy != null && serverPy.includes('mount')) || serversYaml != null;
+    if (isHub) {
+      let subServers: HubSubServer[] = [];
+      if (serversYaml || serversLocalYaml) {
+        subServers = parseYamlServers(serversYaml, serversLocalYaml);
+      } else if (serverPy) {
+        subServers = parseHubSubServers(serverPy);
+      }
+      mcpServers[name] = { ...cfg, isHub: true, subServers };
+    } else {
+      mcpServers[name] = cfg;
+    }
+  }
+
+  return c.json({ settings, rules, skills, agents, commands, hooks, mcpServers, permissions });
+});
+
+app.get('/api/claude-config/project/:projectId', (c) => {
+  const id = c.req.param('projectId');
+  const project = withSvc((svc) => svc.getProjectById(id));
+  if (!project) return c.json({ error: 'Project not found' }, 404);
+
+  const projectPath = project.path;
+
+  // CLAUDE.md
+  const claudeMd = readFileSafe(path.join(projectPath, 'CLAUDE.md'));
+
+  // .claude directory
+  const claudeDir = path.join(projectPath, '.claude');
+
+  // Rules
+  const rulesDir = path.join(claudeDir, 'rules');
+  const rules = readDirSafe(rulesDir)
+    .filter((f) => f.endsWith('.md'))
+    .map((f) => {
+      const content = readFileSafe(path.join(rulesDir, f)) ?? '';
+      const { meta, body } = parseFrontMatter(content);
+      return { name: f.replace(/\.md$/, ''), file: f, ...meta, body: body.slice(0, 500) };
+    });
+
+  // Agents
+  const agentsDir = path.join(claudeDir, 'agents');
+  const agents = readDirSafe(agentsDir)
+    .filter((d) => {
+      try { return fs.statSync(path.join(agentsDir, d)).isDirectory(); } catch { return false; }
+    })
+    .map((d) => {
+      const content = readFileSafe(path.join(agentsDir, d, 'AGENT.md')) ?? '';
+      const { meta, body } = parseFrontMatter(content);
+      return { name: d, file: `agents/${d}/AGENT.md`, ...meta, body: body.slice(0, 300) };
+    });
+
+  // Commands
+  const commandsDir = path.join(claudeDir, 'commands');
+  const commands = readDirSafe(commandsDir)
+    .filter((f) => f.endsWith('.md'))
+    .map((f) => {
+      const content = readFileSafe(path.join(commandsDir, f)) ?? '';
+      const { meta, body } = parseFrontMatter(content);
+      return { name: f.replace(/\.md$/, ''), file: f, ...meta, body: body.slice(0, 300) };
+    });
+
+  // Local settings.json
+  const rawSettings = readFileSafe(path.join(claudeDir, 'settings.json'));
+  let localSettings: Record<string, unknown> | null = null;
+  if (rawSettings) {
+    try { localSettings = JSON.parse(rawSettings); } catch { /* */ }
+  }
+
+  return c.json({
+    project: { id: project.id, name: project.name, path: project.path },
+    claudeMd: claudeMd ? claudeMd.slice(0, 10000) : null,
+    rules,
+    agents,
+    commands,
+    localSettings,
+  });
+});
+
+app.get('/api/claude-config/file', (c) => {
+  const rawPath = c.req.query('path');
+  if (!rawPath) return c.json({ error: 'path required' }, 400);
+
+  // Resolve ~ to home directory
+  const home = os.homedir();
+  const filePath = rawPath.startsWith('~/') ? path.join(home, rawPath.slice(2)) : rawPath;
+
+  // Security: only allow files under ~/.claude/ or registered project paths
+  const claudeDir = path.join(home, '.claude');
+  const resolved = path.resolve(filePath);
+
+  const isUnderClaude = resolved.startsWith(claudeDir + path.sep);
+  let isUnderProject = false;
+  if (!isUnderClaude) {
+    const projects = withSvc((svc) => svc.listProjects());
+    isUnderProject = projects.some((p) => resolved.startsWith(p.path + path.sep));
+  }
+
+  if (!isUnderClaude && !isUnderProject) {
+    return c.json({ error: 'Path not allowed' }, 403);
+  }
+
+  const content = readFileSafe(resolved);
+  if (content === null) return c.json({ error: 'File not found' }, 404);
+  return c.json({ path: resolved, content });
+});
+
 // ─── API 404 guard — return JSON for any unmatched /api/* route ───────────────
 app.all('/api/*', (c) => c.json({ error: 'Not found' }, 404));
 

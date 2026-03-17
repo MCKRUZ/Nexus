@@ -17,6 +17,7 @@ import { Observability } from './pages/Observability.js';
 import { Settings } from './pages/Settings.js';
 import { Health } from './pages/Health.js';
 import { Sessions } from './pages/Sessions.js';
+import { ClaudeConfig } from './pages/ClaudeConfig.js';
 
 const FAST_POLL_MS = 1_000;
 const SLOW_POLL_MS = 10_000;
@@ -214,6 +215,9 @@ export function App() {
           <NavLink to="/health" className={({ isActive }) => isActive ? 'active' : ''}>
             <span className="icon">♥</span> Health
           </NavLink>
+          <NavLink to="/claude-config" className={({ isActive }) => isActive ? 'active' : ''}>
+            <span className="icon">⊞</span> Claude Config
+          </NavLink>
           <NavLink to="/settings" className={({ isActive }) => isActive ? 'active' : ''}>
             <span className="icon">⚙</span> Settings
           </NavLink>
@@ -238,6 +242,7 @@ export function App() {
           <Route path="/tokens" element={<PageShell title="Token Audit"><TokenAudit /></PageShell>} />
           <Route path="/observability" element={<PageShell title="LLM Observability"><Observability /></PageShell>} />
           <Route path="/sessions" element={<PageShell title="Session Audit"><Sessions /></PageShell>} />
+          <Route path="/claude-config" element={<PageShell title="Claude Config"><ClaudeConfig /></PageShell>} />
           <Route path="/health" element={<PageShell title="System Health"><Health /></PageShell>} />
           <Route path="/settings" element={<PageShell title="Settings"><Settings /></PageShell>} />
         </Routes>
