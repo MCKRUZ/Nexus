@@ -247,6 +247,43 @@ export interface ActivityEvent {
   timestamp: number;
 }
 
+// ─── Tool usefulness types ───────────────────────────────────────────────────
+
+export interface UsefulnessSignal {
+  type: 'result_content' | 'sequential_chain' | 'direct_reference' | 'result_substance';
+  score: number;
+  weight: number;
+  detail?: string;
+}
+
+export interface NexusToolCallSummary {
+  toolName: string;
+  inputPreview: string;
+  resultPreview: string;
+  usefulnessScore: number;
+  signals: UsefulnessSignal[];
+  sessionId: string;
+  timestamp: string;
+}
+
+export interface ToolUsefulnessAggregate {
+  toolName: string;
+  totalCalls: number;
+  avgScore: number;
+  emptyResultRate: number;
+  followUpRate: number;
+  referenceRate: number;
+}
+
+export interface ToolUsefulnessAnalytics {
+  overallScore: number;
+  totalToolCalls: number;
+  byTool: ToolUsefulnessAggregate[];
+  dailyScores: Array<{ date: string; avgScore: number; calls: number }>;
+  topUseful: NexusToolCallSummary[];
+  leastUseful: NexusToolCallSummary[];
+}
+
 // ─── Token analytics types ───────────────────────────────────────────────────
 
 export interface TokenUsageByModel {
@@ -721,6 +758,8 @@ export const api = {
       if (params.length) url += `?${params.join('&')}`;
       return get<AuditCountByOperation[]>(url);
     },
+    toolUsefulness: (sinceDays = 30) =>
+      get<ToolUsefulnessAnalytics>(`/analytics/tool-usefulness?since=${sinceDays}`),
   },
   native: {
     stats: () => get<NativeStats>('/native/stats'),

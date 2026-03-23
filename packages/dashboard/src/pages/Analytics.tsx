@@ -1,5 +1,5 @@
 import { useEffect, useState, useMemo, useCallback } from 'react';
-import { api, type SessionAnalytics, type AuditCountByDay } from '../api.js';
+import { api, type SessionAnalytics, type AuditCountByDay, type ToolUsefulnessAnalytics } from '../api.js';
 
 type Range = '1h' | '5h' | '1d' | '7d' | '30d' | '90d' | 'all';
 
@@ -368,10 +368,147 @@ function TopSessionsTable({ sessions }: { sessions: SessionAnalytics['topNexusSe
 
 // ─── Analytics Page ──────────────────────────────────────────────────────────
 
+// ─── Tool Usefulness Section ─────────────────────────────────────────────────
+
+function scoreColor(score: number): string {
+  if (score >= 0.7) return '#3fb950';
+  if (score >= 0.4) return '#d29922';
+  return '#f85149';
+}
+
+function ToolUsefulnessSection({ data }: { data: ToolUsefulnessAnalytics }) {
+  const [expanded, setExpanded] = useState<string | null>(null);
+
+  if (data.totalToolCalls === 0) {
+    return (
+      <div className="chart-card">
+        <div className="chart-title">Tool Usefulness</div>
+        <div className="empty" style={{ padding: '24px 0' }}>No nexus tool calls to analyze</div>
+      </div>
+    );
+  }
+
+  const hitRate = data.byTool.length > 0
+    ? 1 - data.byTool.reduce((s, t) => s + t.emptyResultRate, 0) / data.byTool.length
+    : 0;
+  const avgFollowUp = data.byTool.length > 0
+    ? data.byTool.reduce((s, t) => s + t.followUpRate, 0) / data.byTool.length
+    : 0;
+
+  return (
+    <>
+      <div className="stats-grid">
+        <KpiCard label="Usefulness Score" value={pct(data.overallScore)} color={data.overallScore >= 0.5 ? 'green' : 'yellow'} sub="weighted avg across all calls" />
+        <KpiCard label="Hit Rate" value={pct(hitRate)} color={hitRate >= 0.7 ? 'green' : 'yellow'} sub="queries returning results" />
+        <KpiCard label="Follow-up Rate" value={pct(avgFollowUp)} color={avgFollowUp >= 0.3 ? 'green' : 'gray'} sub="calls leading to deeper queries" />
+        <KpiCard label="Calls Analyzed" value={data.totalToolCalls} color="accent" />
+      </div>
+
+      <div className="grid-2">
+        <div className="chart-card">
+          <div className="chart-title">Usefulness by Tool</div>
+          <div>
+            {data.byTool.map((tool) => (
+              <div key={tool.toolName} style={{ marginBottom: 10 }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, marginBottom: 4 }}>
+                  <span style={{ color: 'var(--text)' }}>{tool.toolName}</span>
+                  <span style={{ color: scoreColor(tool.avgScore) }}>{pct(tool.avgScore)} ({tool.totalCalls} calls)</span>
+                </div>
+                <div style={{ height: 8, background: 'var(--bg3)', borderRadius: 4 }}>
+                  <div style={{
+                    width: `${Math.round(tool.avgScore * 100)}%`,
+                    height: '100%',
+                    background: scoreColor(tool.avgScore),
+                    borderRadius: 4,
+                    transition: 'width 0.3s ease',
+                  }} />
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+
+        <div className="chart-card">
+          <div className="chart-title">Daily Usefulness Trend</div>
+          {data.dailyScores.length > 1 ? (
+            <svg viewBox={`0 0 400 120`} style={{ width: '100%', height: 120 }}>
+              {(() => {
+                const scores = data.dailyScores;
+                const xStep = 400 / Math.max(scores.length - 1, 1);
+                const points = scores.map((d, i) => `${i * xStep},${110 - d.avgScore * 100}`).join(' ');
+                const areaPoints = `0,110 ${points} ${(scores.length - 1) * xStep},110`;
+                return (
+                  <>
+                    <polygon points={areaPoints} fill="rgba(63,185,80,0.15)" />
+                    <polyline points={points} fill="none" stroke="#3fb950" strokeWidth="2" />
+                    {scores.map((d, i) => (
+                      <circle key={d.date} cx={i * xStep} cy={110 - d.avgScore * 100} r={Math.min(d.calls, 6)} fill="#3fb950" opacity={0.6}>
+                        <title>{`${d.date}: ${pct(d.avgScore)} (${d.calls} calls)`}</title>
+                      </circle>
+                    ))}
+                  </>
+                );
+              })()}
+            </svg>
+          ) : (
+            <div className="empty" style={{ padding: '24px 0' }}>Need 2+ days of data</div>
+          )}
+        </div>
+      </div>
+
+      <section>
+        <div className="section-header">
+          <span className="section-title">Most Useful Tool Calls</span>
+          <span style={{ fontSize: 12, color: 'var(--text2)' }}>Top {Math.min(data.topUseful.length, 10)}</span>
+        </div>
+        <div className="card" style={{ padding: 0 }}>
+          <table>
+            <thead>
+              <tr>
+                <th>Tool</th><th>Input</th><th>Score</th><th>Signals</th><th></th>
+              </tr>
+            </thead>
+            <tbody>
+              {data.topUseful.slice(0, 10).map((call, i) => (
+                <>
+                  <tr key={`row-${i}`} style={{ cursor: 'pointer' }} onClick={() => setExpanded(expanded === `top-${i}` ? null : `top-${i}`)}>
+                    <td style={{ fontWeight: 600 }}>{call.toolName}</td>
+                    <td style={{ fontSize: 11, maxWidth: 200, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{call.inputPreview}</td>
+                    <td style={{ color: scoreColor(call.usefulnessScore), fontWeight: 600 }}>{pct(call.usefulnessScore)}</td>
+                    <td style={{ fontSize: 11 }}>
+                      {call.signals.filter((s) => s.score > 0).map((s) => s.type.replace(/_/g, ' ')).join(', ') || 'none'}
+                    </td>
+                    <td>{expanded === `top-${i}` ? '▾' : '▸'}</td>
+                  </tr>
+                  {expanded === `top-${i}` && (
+                    <tr key={`detail-${i}`}>
+                      <td colSpan={5} style={{ background: 'var(--bg2)', padding: 12, fontSize: 12 }}>
+                        <div><strong>Result:</strong> {call.resultPreview || '(empty)'}</div>
+                        <div style={{ marginTop: 8 }}>
+                          {call.signals.map((s) => (
+                            <span key={s.type} style={{ marginRight: 12, color: s.score > 0.5 ? '#3fb950' : 'var(--text2)' }}>
+                              {s.type.replace(/_/g, ' ')}: {pct(s.score)} (w:{s.weight})
+                            </span>
+                          ))}
+                        </div>
+                      </td>
+                    </tr>
+                  )}
+                </>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </section>
+    </>
+  );
+}
+
 export function Analytics() {
   const [range, setRange] = useState<Range>('30d');
   const [data, setData] = useState<SessionAnalytics | null>(null);
   const [auditDaily, setAuditDaily] = useState<AuditCountByDay[]>([]);
+  const [usefulness, setUsefulness] = useState<ToolUsefulnessAnalytics | null>(null);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
 
@@ -380,12 +517,14 @@ export function Analytics() {
     try {
       const days = RANGE_DAYS[range];
       const since = Date.now() - days * 86400000;
-      const [sessionData, audit] = await Promise.all([
+      const [sessionData, audit, usefulnessData] = await Promise.all([
         api.analytics.sessions(days),
         api.analytics.auditDaily(since),
+        api.analytics.toolUsefulness(days),
       ]);
       setData(sessionData);
       setAuditDaily(audit);
+      setUsefulness(usefulnessData);
     } catch (e) {
       console.error('Analytics load error:', e);
     } finally {
@@ -488,6 +627,16 @@ export function Analytics() {
           <AuditChart auditDaily={auditDaily} />
         </div>
       </div>
+
+      {/* ── Tool Usefulness ──────────────────────────────────────────────── */}
+      {usefulness && (
+        <section>
+          <div className="section-header">
+            <span className="section-title">Tool Usefulness Analysis</span>
+          </div>
+          <ToolUsefulnessSection data={usefulness} />
+        </section>
+      )}
 
       {/* ── Top sessions table ────────────────────────────────────────────── */}
       <section>

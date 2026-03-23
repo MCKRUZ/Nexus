@@ -10,6 +10,7 @@ export * from './llm/index.js';
 export * from './sync/index.js';
 export * from './native/session-reader.js';
 export * from './native/session-analytics.js';
+export * from './native/tool-usefulness.js';
 export * from './native/token-analytics.js';
 export * from './native/context-overhead.js';
 export * from './diagnostics/index.js';
