@@ -62,6 +62,8 @@ import { emitPipelineEvent, getPipelineStats, getLlmCosts, type PipelineEvent, t
 import { runDoctorFix, type DoctorFixResult } from './diagnostics/doctor-fix.js';
 import { syncClaudeMd } from './sync/claude-md-sync.js';
 import type { PortfolioEntry } from './sync/claude-md-sync.js';
+import { selectRelevantProjects } from './sync/relevance.js';
+import type { ProjectCandidate } from './sync/relevance.js';
 import fs from 'node:fs';
 
 export type { AuditQueryOptions, AuditCountByDay, AuditCountByOperation };
@@ -391,7 +393,24 @@ export class NexusService {
       description: findNoteByTitle(this.db, p.id, 'Project Overview')?.content ?? '',
       tags: p.tags ?? [],
       isCurrent: p.id === project.id,
+      ...(p.lastSeenAt !== undefined ? { lastSeenAt: p.lastSeenAt } : {}),
+      ...(p.parentId !== undefined ? { parentId: p.parentId } : {}),
     }));
+
+    // Build cross-project note candidates for relevance scoring
+    const candidates: ProjectCandidate[] = allProjects
+      .filter((p) => p.id !== project.id)
+      .map((p) => ({
+        projectName: p.name,
+        project: { id: p.id, parentId: p.parentId, tags: p.tags },
+        notes: findNotesByProject(this.db, p.id),
+      }))
+      .filter((c) => c.notes.length > 0);
+
+    const relatedProjectNotes = selectRelevantProjects(
+      { project: { id: project.id, parentId: project.parentId, tags: project.tags }, notes },
+      candidates,
+    );
 
     try {
       const result = syncClaudeMd({
@@ -400,6 +419,7 @@ export class NexusService {
         portfolio,
         decisions,
         conflicts: conflicts as Conflict[],
+        relatedProjectNotes,
       });
       if (result.updated) {
         emitPipelineEvent(this.db, project.id, 'pipeline.sync.success');

@@ -29,6 +29,8 @@ export interface PortfolioEntry {
   description: string;  // from "Project Overview" note, truncated
   tags: string[];
   isCurrent: boolean;
+  lastSeenAt?: number;  // Unix ms — used for recency filtering
+  parentId?: string;    // For structural relationship detection
 }
 
 export interface SyncInput {
@@ -37,6 +39,7 @@ export interface SyncInput {
   portfolio: PortfolioEntry[];// ALL registered projects
   decisions: Decision[];      // own-project decisions
   conflicts: Conflict[];      // open conflicts involving this project
+  relatedProjectNotes?: Array<{ projectName: string; notes: Note[] }>;
 }
 
 export interface SyncResult {
@@ -69,17 +72,35 @@ function buildLines(input: SyncInput, opts: {
   ];
 
   // ── Portfolio Map ──────────────────────────────────────────────────────────
-  if (input.portfolio.length > 0) {
+  // Only show: current project + structural relationships + recently active (30d), max 12
+  const current = input.portfolio.find((e) => e.isCurrent);
+  const thirtyDaysAgo = Date.now() - 30 * 24 * 60 * 60 * 1000;
+  const currentParentId = current?.parentId;
+
+  const filteredPortfolio = input.portfolio.filter((e) => {
+    if (e.isCurrent) return true;
+    // Structural: parent or sibling (same parent as current)
+    if (currentParentId && e.parentId === currentParentId) return true;
+    if (currentParentId && e.name === currentParentId) return true;
+    // Recently active
+    return (e.lastSeenAt ?? 0) >= thirtyDaysAgo;
+  }).slice(0, 12);
+
+  if (filteredPortfolio.length > 0) {
+    const hiddenCount = input.portfolio.length - filteredPortfolio.length;
     lines.push('### Portfolio');
     lines.push('| Project | Description | Tech |');
     lines.push('|---------|------------|------|');
-    for (const entry of input.portfolio) {
+    for (const entry of filteredPortfolio) {
       const name = entry.isCurrent ? `**${entry.name}** (this)` : entry.name;
       const desc = entry.description
         ? trunc(entry.description, opts.portfolioDescChars)
         : '—';
       const tech = entry.tags.slice(0, 3).join(', ') || '—';
       lines.push(`| ${name} | ${desc} | ${tech} |`);
+    }
+    if (hiddenCount > 0) {
+      lines.push(`| _+${hiddenCount} inactive_ | — | — |`);
     }
     lines.push('');
   }
@@ -99,6 +120,23 @@ function buildLines(input: SyncInput, opts: {
         lines.push(`*Tags: ${note.tags.join(', ')}*`);
       }
       lines.push('');
+    }
+  }
+
+  // ── Related Project Context ──────────────────────────────────────────────
+  if (input.relatedProjectNotes && input.relatedProjectNotes.length > 0) {
+    for (const related of input.relatedProjectNotes) {
+      const relatedNotes = related.notes.filter((n) => n.title !== 'Project Overview');
+      if (relatedNotes.length === 0) continue;
+      lines.push(`### Context from ${related.projectName}`);
+      for (const note of relatedNotes) {
+        lines.push(`#### ${note.title}`);
+        lines.push(trunc(note.content, opts.ownNoteChars));
+        if (note.tags.length > 0) {
+          lines.push(`*Tags: ${note.tags.join(', ')}*`);
+        }
+        lines.push('');
+      }
     }
   }
 

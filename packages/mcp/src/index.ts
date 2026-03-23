@@ -572,7 +572,7 @@ server.tool(
               `- **ID:** ${result.note.id}`,
               result.note.tags.length > 0 ? `- **Tags:** ${result.note.tags.join(', ')}` : null,
               ``,
-              `Note will appear in CLAUDE.md on next session sync (Stop hook runs automatically).`,
+              `Note will appear in CLAUDE.md on next sync (Stop hook syncs automatically at session end, or run \`nexus sync\`).`,
             ]
               .filter(Boolean)
               .join('\n'),

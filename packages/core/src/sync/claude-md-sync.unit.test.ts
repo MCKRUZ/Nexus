@@ -88,8 +88,8 @@ describe('syncClaudeMd', () => {
       projectPath: tmpDir,
       portfolio: [
         { name: 'TeamsBuddy', description: 'Teams bot for standup automation', tags: ['csharp', 'signalr'], isCurrent: true },
-        { name: 'Nexus', description: 'Cross-project intelligence layer', tags: ['typescript', 'sqlite'], isCurrent: false },
-        { name: 'OpenClaw', description: '', tags: ['typescript'], isCurrent: false },
+        { name: 'Nexus', description: 'Cross-project intelligence layer', tags: ['typescript', 'sqlite'], isCurrent: false, lastSeenAt: Date.now() },
+        { name: 'OpenClaw', description: '', tags: ['typescript'], isCurrent: false, lastSeenAt: Date.now() },
       ],
     });
 
@@ -331,6 +331,124 @@ describe('token budget enforcement', () => {
     const nexusEnd = content.indexOf('<!-- nexus:end -->') + '<!-- nexus:end -->'.length;
     const sectionLength = nexusEnd - nexusStart;
     expect(sectionLength).toBeLessThanOrEqual(6000);
+  });
+});
+
+describe('cross-project note injection', () => {
+  let tmpDir: string;
+
+  beforeEach(() => {
+    tmpDir = makeTempDir();
+  });
+
+  afterEach(() => {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it('renders related project notes in the section', () => {
+    const result = syncClaudeMd({
+      ...EMPTY_INPUT,
+      projectPath: tmpDir,
+      relatedProjectNotes: [
+        {
+          projectName: 'OpenClaw',
+          notes: [
+            { id: 'rn1', projectId: 'p2', title: 'Key Entities', content: 'Sage and Jarvis are AI agents', tags: ['ai'], createdAt: Date.now(), updatedAt: Date.now(), source: 'mcp' },
+          ],
+        },
+      ],
+    });
+
+    const content = fs.readFileSync(result.claudeMdPath, 'utf8');
+    expect(content).toContain('### Context from OpenClaw');
+    expect(content).toContain('#### Key Entities');
+    expect(content).toContain('Sage and Jarvis are AI agents');
+  });
+
+  it('excludes "Project Overview" from related project notes', () => {
+    const result = syncClaudeMd({
+      ...EMPTY_INPUT,
+      projectPath: tmpDir,
+      relatedProjectNotes: [
+        {
+          projectName: 'SomeProject',
+          notes: [
+            { id: 'rn1', projectId: 'p2', title: 'Project Overview', content: 'Already in portfolio', tags: [], createdAt: Date.now(), updatedAt: Date.now(), source: 'mcp' },
+            { id: 'rn2', projectId: 'p2', title: 'API Design', content: 'REST with versioning', tags: ['api'], createdAt: Date.now(), updatedAt: Date.now(), source: 'mcp' },
+          ],
+        },
+      ],
+    });
+
+    const content = fs.readFileSync(result.claudeMdPath, 'utf8');
+    expect(content).not.toContain('#### Project Overview');
+    expect(content).toContain('#### API Design');
+    expect(content).toContain('REST with versioning');
+  });
+
+  it('skips related projects with only Project Overview notes', () => {
+    const result = syncClaudeMd({
+      ...EMPTY_INPUT,
+      projectPath: tmpDir,
+      relatedProjectNotes: [
+        {
+          projectName: 'EmptyProject',
+          notes: [
+            { id: 'rn1', projectId: 'p2', title: 'Project Overview', content: 'Nothing useful here', tags: [], createdAt: Date.now(), updatedAt: Date.now(), source: 'mcp' },
+          ],
+        },
+      ],
+    });
+
+    const content = fs.readFileSync(result.claudeMdPath, 'utf8');
+    expect(content).not.toContain('Context from EmptyProject');
+  });
+
+  it('renders multiple related projects', () => {
+    const result = syncClaudeMd({
+      ...EMPTY_INPUT,
+      projectPath: tmpDir,
+      relatedProjectNotes: [
+        {
+          projectName: 'ProjectA',
+          notes: [
+            { id: 'rn1', projectId: 'p2', title: 'Auth Pattern', content: 'Uses JWT', tags: [], createdAt: Date.now(), updatedAt: Date.now(), source: 'mcp' },
+          ],
+        },
+        {
+          projectName: 'ProjectB',
+          notes: [
+            { id: 'rn2', projectId: 'p3', title: 'DB Schema', content: 'PostgreSQL with Prisma', tags: [], createdAt: Date.now(), updatedAt: Date.now(), source: 'mcp' },
+          ],
+        },
+      ],
+    });
+
+    const content = fs.readFileSync(result.claudeMdPath, 'utf8');
+    expect(content).toContain('### Context from ProjectA');
+    expect(content).toContain('### Context from ProjectB');
+    expect(content).toContain('Uses JWT');
+    expect(content).toContain('PostgreSQL with Prisma');
+  });
+
+  it('truncates related note content to the same budget as own notes', () => {
+    const longContent = 'Z'.repeat(300);
+    const result = syncClaudeMd({
+      ...EMPTY_INPUT,
+      projectPath: tmpDir,
+      relatedProjectNotes: [
+        {
+          projectName: 'BigProject',
+          notes: [
+            { id: 'rn1', projectId: 'p2', title: 'Big Note', content: longContent, tags: [], createdAt: Date.now(), updatedAt: Date.now(), source: 'mcp' },
+          ],
+        },
+      ],
+    });
+
+    const content = fs.readFileSync(result.claudeMdPath, 'utf8');
+    expect(content).not.toContain(longContent);
+    expect(content).toContain('Z'.repeat(149) + '…');
   });
 });
 
