@@ -159,6 +159,12 @@ export function selectRelevantProjects(
       return { projectName, notes, score: 0, isStructural };
     }
 
+    // Infrastructure notes (tagged "infrastructure") get a score boost
+    // so they surface across all projects regardless of content overlap
+    const INFRA_TAGS = new Set(['infrastructure', 'ssh', 'deployment', 'server', 'docker']);
+    const noteTags = notes.flatMap((n) => n.tags);
+    const infraBonus = noteTags.some((t) => INFRA_TAGS.has(t)) ? 15 : 0;
+
     // Tag overlap
     const candidateTags = project.tags ?? [];
     const tagScore = targetTags.reduce(
@@ -175,7 +181,7 @@ export function selectRelevantProjects(
     return {
       projectName,
       notes,
-      score: tagScore + contentScore,
+      score: tagScore + contentScore + infraBonus,
       isStructural,
     };
   });
