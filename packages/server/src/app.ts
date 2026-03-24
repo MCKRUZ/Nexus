@@ -192,6 +192,21 @@ app.post('/api/conflicts/:id/dismiss', (c) => {
   return c.json({ dismissed: true });
 });
 
+app.post('/api/projects/:id/impact-analysis', async (c) => {
+  const projectId = c.req.param('id');
+  const body = await c.req.json<{ change: string; kind?: string }>();
+  if (!body.change) return c.json({ error: 'change is required' }, 400);
+
+  const result = withSvc((svc) => {
+    const project = svc.getProjectById(projectId);
+    if (!project) return null;
+    return svc.analyzeImpact(projectId, body.change, body.kind as DecisionKind | undefined);
+  });
+
+  if (!result) return c.json({ error: 'Project not found' }, 404);
+  return c.json(result);
+});
+
 // ─── Preferences ──────────────────────────────────────────────────────────────
 
 app.get('/api/preferences', (c) => {

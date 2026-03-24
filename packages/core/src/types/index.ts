@@ -103,6 +103,31 @@ export const NoteSchema = z.object({
 
 export type Note = z.infer<typeof NoteSchema>;
 
+// ─── Impact Analysis ─────────────────────────────────────────────────────────
+
+export interface ImpactEvidence {
+  type: 'decision' | 'note' | 'pattern';
+  title: string;
+  snippet: string;
+  overlap: number;
+}
+
+export type ImpactRelationship = 'parent' | 'child' | 'sibling' | 'tag' | 'infrastructure';
+
+export interface AffectedProject {
+  projectId: string;
+  projectName: string;
+  severity: 'critical' | 'high' | 'medium' | 'low';
+  confidence: number;
+  evidence: ImpactEvidence[];
+  relationship: ImpactRelationship;
+}
+
+export interface ImpactResult {
+  affectedProjects: AffectedProject[];
+  summary: string;
+}
+
 // ─── Session Events (for compaction recovery) ────────────────────────────────
 
 export const SessionEventTypeSchema = z.enum([

@@ -1,9 +1,12 @@
 import { randomUUID } from 'node:crypto';
 import type { NexusDb } from '../db/connection.js';
-import type { Conflict, ConflictTier, ConflictSeverity } from '../types/index.js';
+import type { Conflict, ConflictTier, ConflictSeverity, ImpactResult, ImpactEvidence, ImpactRelationship, AffectedProject, DecisionKind } from '../types/index.js';
 import { auditLog } from './audit.js';
 import { findDecisionsByProject } from './decision.js';
-import { findProjectById, findRelatedProjectIds } from './project.js';
+import { findProjectById, findAllProjects, findRelatedProjectIds } from './project.js';
+import { findNotesByProject } from './note.js';
+import { findPatternsByProject } from './pattern.js';
+import { keywordJaccard, extractKeywords as extractSimilarityKeywords } from '../utils/similarity.js';
 
 interface ConflictRow {
   id: string;
@@ -229,4 +232,153 @@ export function dismissAdvisory(
     return true;
   }
   return false;
+}
+
+// ─── Impact Analysis ─────────────────────────────────────────────────────────
+
+function trunc(s: string, max: number): string {
+  return s.length > max ? s.slice(0, max - 1) + '...' : s;
+}
+
+function determineRelationship(
+  db: NexusDb,
+  sourceProjectId: string,
+  targetProjectId: string,
+): ImpactRelationship {
+  const source = findProjectById(db, sourceProjectId);
+  const target = findProjectById(db, targetProjectId);
+  if (!source || !target) return 'tag';
+
+  if (source.parentId === targetProjectId) return 'parent';
+  if (target.parentId === sourceProjectId) return 'child';
+  if (source.parentId && source.parentId === target.parentId) return 'sibling';
+
+  // Check for infrastructure notes
+  const targetNotes = findNotesByProject(db, targetProjectId);
+  const hasInfra = targetNotes.some((n) =>
+    n.tags.some((t) => ['infrastructure', 'ssh', 'deployment', 'server', 'docker'].includes(t)),
+  );
+  if (hasInfra) return 'infrastructure';
+
+  return 'tag';
+}
+
+function determineSeverity(
+  relationship: ImpactRelationship,
+  maxOverlap: number,
+  changeKind?: DecisionKind,
+): 'critical' | 'high' | 'medium' | 'low' {
+  const isHighKind = changeKind === 'security' || changeKind === 'architecture';
+  const isDirect = relationship === 'parent' || relationship === 'child';
+
+  if (isDirect && maxOverlap > 0.4 && isHighKind) return 'critical';
+  if (isDirect && maxOverlap > 0.3) return 'high';
+  if (relationship === 'infrastructure' && maxOverlap > 0.2) return 'high';
+  if (maxOverlap > 0.3) return 'medium';
+  if (maxOverlap > 0.15) return 'low';
+  return 'low';
+}
+
+/**
+ * Analyze the downstream impact of a proposed change across related projects.
+ * Returns affected projects with severity, confidence, and evidence.
+ */
+export function analyzeImpact(
+  db: NexusDb,
+  projectId: string,
+  changeDescription: string,
+  changeKind?: DecisionKind,
+): ImpactResult {
+  const relatedIds = findRelatedProjectIds(db, projectId);
+  if (relatedIds.size === 0) {
+    return { affectedProjects: [], summary: 'No related projects found.' };
+  }
+
+  const changeKeywords = extractSimilarityKeywords(changeDescription);
+  if (changeKeywords.size === 0) {
+    return { affectedProjects: [], summary: 'No meaningful keywords in change description.' };
+  }
+
+  const affectedProjects: AffectedProject[] = [];
+
+  for (const relatedId of relatedIds) {
+    const project = findProjectById(db, relatedId);
+    if (!project) continue;
+
+    const evidence: ImpactEvidence[] = [];
+    let maxOverlap = 0;
+
+    // Check decisions
+    const decisions = findDecisionsByProject(db, relatedId);
+    for (const d of decisions) {
+      const overlap = keywordJaccard(changeDescription, d.summary + (d.rationale ? ' ' + d.rationale : ''));
+      if (overlap > 0.1) {
+        evidence.push({
+          type: 'decision',
+          title: `[${d.kind}] ${trunc(d.summary, 80)}`,
+          snippet: trunc(d.rationale ?? d.summary, 150),
+          overlap: Math.round(overlap * 100) / 100,
+        });
+        maxOverlap = Math.max(maxOverlap, overlap);
+      }
+    }
+
+    // Check notes
+    const notes = findNotesByProject(db, relatedId);
+    for (const n of notes) {
+      const overlap = keywordJaccard(changeDescription, n.title + ' ' + n.content);
+      if (overlap > 0.1) {
+        evidence.push({
+          type: 'note',
+          title: n.title,
+          snippet: trunc(n.content, 150),
+          overlap: Math.round(overlap * 100) / 100,
+        });
+        maxOverlap = Math.max(maxOverlap, overlap);
+      }
+    }
+
+    // Check patterns
+    const patterns = findPatternsByProject(db, relatedId);
+    for (const p of patterns) {
+      const overlap = keywordJaccard(changeDescription, p.name + ' ' + p.description);
+      if (overlap > 0.1) {
+        evidence.push({
+          type: 'pattern',
+          title: p.name,
+          snippet: trunc(p.description, 150),
+          overlap: Math.round(overlap * 100) / 100,
+        });
+        maxOverlap = Math.max(maxOverlap, overlap);
+      }
+    }
+
+    if (evidence.length === 0) continue;
+
+    const relationship = determineRelationship(db, projectId, relatedId);
+    const severity = determineSeverity(relationship, maxOverlap, changeKind);
+    const confidence = Math.round(Math.min(maxOverlap * 2, 1.0) * 100) / 100;
+
+    // Sort evidence by overlap descending, keep top 5
+    evidence.sort((a, b) => b.overlap - a.overlap);
+
+    affectedProjects.push({
+      projectId: relatedId,
+      projectName: project.name,
+      severity,
+      confidence,
+      evidence: evidence.slice(0, 5),
+      relationship,
+    });
+  }
+
+  // Sort by severity
+  const severityOrder = { critical: 0, high: 1, medium: 2, low: 3 };
+  affectedProjects.sort((a, b) => severityOrder[a.severity] - severityOrder[b.severity]);
+
+  const summary = affectedProjects.length === 0
+    ? 'No downstream impact detected.'
+    : `${affectedProjects.length} project${affectedProjects.length === 1 ? '' : 's'} affected: ${affectedProjects.map((p) => `${p.projectName} (${p.severity})`).join(', ')}`;
+
+  return { affectedProjects, summary };
 }

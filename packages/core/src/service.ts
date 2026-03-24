@@ -45,7 +45,7 @@ import {
   setPreference,
   listPreferences,
 } from './repositories/preference.js';
-import { checkConflicts, createConflict, resolveConflict, dismissAdvisory } from './repositories/conflict.js';
+import { checkConflicts, createConflict, resolveConflict, dismissAdvisory, analyzeImpact } from './repositories/conflict.js';
 import {
   findNotesByProject,
   findNoteById,
@@ -55,7 +55,7 @@ import {
   deleteNote,
   type UpsertNoteParams,
 } from './repositories/note.js';
-import type { Project, Decision, Pattern, Preference, Conflict, Note, AuditEntry, ConflictTier, ConflictSeverity } from './types/index.js';
+import type { Project, Decision, Pattern, Preference, Conflict, Note, AuditEntry, ConflictTier, ConflictSeverity, ImpactResult } from './types/index.js';
 import type { DecisionKind } from './types/index.js';
 import { runDoctor, type DoctorReport } from './diagnostics/doctor.js';
 import { emitPipelineEvent, getPipelineStats, getLlmCosts, type PipelineEvent, type PipelineStats, type LlmCostSummary } from './diagnostics/pipeline.js';
@@ -303,6 +303,14 @@ export class NexusService {
     source: 'cli' | 'mcp' | 'daemon' = 'cli',
   ): boolean {
     return dismissAdvisory(this.db, conflictId, source);
+  }
+
+  analyzeImpact(
+    projectId: string,
+    changeDescription: string,
+    changeKind?: DecisionKind,
+  ): ImpactResult {
+    return analyzeImpact(this.db, projectId, changeDescription, changeKind);
   }
 
   // ─── Notes ─────────────────────────────────────────────────────────────────

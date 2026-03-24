@@ -120,7 +120,22 @@ server.tool(
         ...(sessionId ? { sessionId } : {}),
       }, 'mcp');
 
-      return { decision, projectName: project.name };
+      // Auto-impact analysis for architecture/security decisions
+      let impactWarning = '';
+      if (kind === 'architecture' || kind === 'security') {
+        const impact = svc.analyzeImpact(project.id, summary, kind);
+        const highImpact = impact.affectedProjects.filter((p) => p.severity === 'critical' || p.severity === 'high');
+        if (highImpact.length > 0) {
+          impactWarning = [
+            ``,
+            `⚠ **Impact Warning:** ${highImpact.length} related project${highImpact.length === 1 ? '' : 's'} may be affected:`,
+            ...highImpact.map((p) => `  - **${p.projectName}** (${p.severity}): ${p.evidence[0]?.snippet ?? 'related content detected'}`),
+            `Run \`nexus_check_impact\` for full details.`,
+          ].join('\n');
+        }
+      }
+
+      return { decision, projectName: project.name, impactWarning };
     });
 
     if ('error' in result) {
@@ -138,6 +153,7 @@ server.tool(
             `- **Decision:** ${result.decision.summary}`,
             result.decision.rationale ? `- **Rationale:** ${result.decision.rationale}` : null,
             `- **ID:** ${result.decision.id}`,
+            result.impactWarning || null,
           ]
             .filter(Boolean)
             .join('\n'),
@@ -630,6 +646,62 @@ server.tool(
     }
 
     return { content: [{ type: 'text', text: 'Unknown action' }], isError: true };
+  },
+);
+
+// ─── nexus_check_impact ──────────────────────────────────────────────────────
+
+server.tool(
+  'nexus_check_impact',
+  'Analyze the downstream impact of a proposed change across related projects. Call this BEFORE making breaking changes to APIs, schemas, auth patterns, or shared infrastructure.',
+  {
+    projectPath: z.string().describe('Absolute path to the project where the change is being made'),
+    change: z.string().describe('Description of the proposed change (e.g., "Changing gateway API from REST to gRPC")'),
+    kind: z.enum(['architecture', 'library', 'pattern', 'naming', 'security', 'other']).optional().describe('Type of change — helps assess severity'),
+  },
+  async ({ projectPath, change, kind }) => {
+    const result = withService((svc) => {
+      const project = svc.getProjectByPath(projectPath);
+      if (!project) {
+        return { error: `No Nexus project registered at "${projectPath}".` };
+      }
+      return { impact: svc.analyzeImpact(project.id, change, kind), projectName: project.name };
+    });
+
+    if ('error' in result) {
+      return { content: [{ type: 'text', text: result.error }], isError: true };
+    }
+
+    const { impact, projectName } = result;
+    if (impact.affectedProjects.length === 0) {
+      return {
+        content: [{
+          type: 'text',
+          text: `## Impact Analysis for ${projectName}\n\n**Change:** ${change}\n\n✓ No downstream impact detected across related projects.`,
+        }],
+      };
+    }
+
+    const lines = [
+      `## Impact Analysis for ${projectName}`,
+      ``,
+      `**Change:** ${change}`,
+      ``,
+      `**${impact.summary}**`,
+      ``,
+    ];
+
+    for (const affected of impact.affectedProjects) {
+      lines.push(`### ${affected.projectName} (${affected.severity.toUpperCase()})`);
+      lines.push(`- **Relationship:** ${affected.relationship}`);
+      lines.push(`- **Confidence:** ${Math.round(affected.confidence * 100)}%`);
+      for (const e of affected.evidence) {
+        lines.push(`- ${e.type}: "${e.title}" (${Math.round(e.overlap * 100)}% overlap)`);
+      }
+      lines.push('');
+    }
+
+    return { content: [{ type: 'text', text: lines.join('\n') }] };
   },
 );
 
