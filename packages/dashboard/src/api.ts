@@ -284,6 +284,17 @@ export interface ToolUsefulnessAnalytics {
   leastUseful: NexusToolCallSummary[];
 }
 
+export interface ServerToolAggregate {
+  serverName: string;
+  tools: ToolUsefulnessAggregate[];
+  totalCalls: number;
+  avgScore: number;
+}
+
+export interface McpToolAnalytics extends ToolUsefulnessAnalytics {
+  byServer: ServerToolAggregate[];
+}
+
 // ─── Token analytics types ───────────────────────────────────────────────────
 
 export interface TokenUsageByModel {
@@ -760,6 +771,8 @@ export const api = {
     },
     toolUsefulness: (sinceDays = 30) =>
       get<ToolUsefulnessAnalytics>(`/analytics/tool-usefulness?since=${sinceDays}`),
+    mcpTools: (sinceDays = 30) =>
+      get<McpToolAnalytics>(`/analytics/mcp-tools?since=${sinceDays}`),
   },
   native: {
     stats: () => get<NativeStats>('/native/stats'),

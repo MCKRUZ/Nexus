@@ -1,5 +1,5 @@
 import { useEffect, useState, useMemo, useCallback } from 'react';
-import { api, type SessionAnalytics, type AuditCountByDay, type ToolUsefulnessAnalytics } from '../api.js';
+import { api, type SessionAnalytics, type AuditCountByDay, type ToolUsefulnessAnalytics, type McpToolAnalytics } from '../api.js';
 
 type Range = '1h' | '5h' | '1d' | '7d' | '30d' | '90d' | 'all';
 
@@ -504,11 +504,81 @@ function ToolUsefulnessSection({ data }: { data: ToolUsefulnessAnalytics }) {
   );
 }
 
+// ─── MCP Tool Intelligence Section ──────────────────────────────────────────
+
+function McpToolIntelligence({ data }: { data: McpToolAnalytics }) {
+  if (data.totalToolCalls === 0) {
+    return (
+      <div className="chart-card">
+        <div className="chart-title">MCP Tool Intelligence</div>
+        <div className="empty" style={{ padding: '24px 0' }}>No MCP tool calls found in sessions</div>
+      </div>
+    );
+  }
+
+  return (
+    <>
+      <div className="stats-grid">
+        <KpiCard label="MCP Tools Tracked" value={data.byTool.length} color="accent" sub={`${data.totalToolCalls} total calls`} />
+        <KpiCard label="Servers Active" value={data.byServer.length} color="green" sub={data.byServer.map((s) => s.serverName).join(', ')} />
+        <KpiCard label="Avg Effectiveness" value={pct(data.overallScore)} color={data.overallScore >= 0.5 ? 'green' : 'yellow'} />
+        <KpiCard label="Top Server" value={data.byServer[0]?.serverName ?? 'n/a'} color="accent" sub={data.byServer[0] ? `${pct(data.byServer[0].avgScore)} avg, ${data.byServer[0].totalCalls} calls` : ''} />
+      </div>
+
+      <div className="grid-2">
+        <div className="chart-card">
+          <div className="chart-title">Effectiveness by Server</div>
+          <div>
+            {data.byServer.map((server) => (
+              <div key={server.serverName} style={{ marginBottom: 14 }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13, marginBottom: 4, fontWeight: 600 }}>
+                  <span style={{ color: 'var(--text)' }}>{server.serverName}</span>
+                  <span style={{ color: scoreColor(server.avgScore) }}>{pct(server.avgScore)} ({server.totalCalls} calls)</span>
+                </div>
+                <div style={{ height: 10, background: 'var(--bg3)', borderRadius: 5 }}>
+                  <div style={{
+                    width: `${Math.round(server.avgScore * 100)}%`,
+                    height: '100%',
+                    background: scoreColor(server.avgScore),
+                    borderRadius: 5,
+                    transition: 'width 0.3s ease',
+                  }} />
+                </div>
+                <div style={{ marginTop: 4, fontSize: 11, color: 'var(--text2)' }}>
+                  {server.tools.map((t) => t.toolName.split(':')[1] ?? t.toolName).join(', ')}
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+
+        <div className="chart-card">
+          <div className="chart-title">Tool Recommendations</div>
+          <div style={{ padding: '8px 0' }}>
+            {data.byTool.slice(0, 5).map((tool) => (
+              <div key={tool.toolName} style={{ display: 'flex', justifyContent: 'space-between', padding: '6px 0', borderBottom: '1px solid var(--bg3)' }}>
+                <span style={{ fontSize: 12, color: 'var(--text)' }}>{tool.toolName}</span>
+                <span style={{ fontSize: 12, color: scoreColor(tool.avgScore), fontWeight: 600 }}>{pct(tool.avgScore)}</span>
+              </div>
+            ))}
+            {data.byTool.length > 5 && (
+              <div style={{ fontSize: 11, color: 'var(--text2)', marginTop: 8 }}>
+                +{data.byTool.length - 5} more tools tracked
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+    </>
+  );
+}
+
 export function Analytics() {
   const [range, setRange] = useState<Range>('30d');
   const [data, setData] = useState<SessionAnalytics | null>(null);
   const [auditDaily, setAuditDaily] = useState<AuditCountByDay[]>([]);
   const [usefulness, setUsefulness] = useState<ToolUsefulnessAnalytics | null>(null);
+  const [mcpTools, setMcpTools] = useState<McpToolAnalytics | null>(null);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
 
@@ -517,14 +587,16 @@ export function Analytics() {
     try {
       const days = RANGE_DAYS[range];
       const since = Date.now() - days * 86400000;
-      const [sessionData, audit, usefulnessData] = await Promise.all([
+      const [sessionData, audit, usefulnessData, mcpData] = await Promise.all([
         api.analytics.sessions(days),
         api.analytics.auditDaily(since),
         api.analytics.toolUsefulness(days),
+        api.analytics.mcpTools(days),
       ]);
       setData(sessionData);
       setAuditDaily(audit);
       setUsefulness(usefulnessData);
+      setMcpTools(mcpData);
     } catch (e) {
       console.error('Analytics load error:', e);
     } finally {
@@ -635,6 +707,19 @@ export function Analytics() {
             <span className="section-title">Tool Usefulness Analysis</span>
           </div>
           <ToolUsefulnessSection data={usefulness} />
+        </section>
+      )}
+
+      {/* ── MCP Tool Intelligence ─────────────────────────────────────────── */}
+      {mcpTools && (
+        <section>
+          <div className="section-header">
+            <span className="section-title">MCP Tool Intelligence</span>
+            <span style={{ fontSize: 12, color: 'var(--text2)' }}>
+              All MCP servers
+            </span>
+          </div>
+          <McpToolIntelligence data={mcpTools} />
         </section>
       )}
 

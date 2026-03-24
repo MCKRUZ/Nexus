@@ -1,9 +1,13 @@
 /**
  * Tool Usefulness Scanner
  *
- * Scans JSONL session files to correlate nexus_* tool_use/tool_result pairs,
+ * Scans JSONL session files to correlate tool_use/tool_result pairs,
  * score each call on a 0-1 usefulness scale using four weighted heuristics,
  * and aggregate into dashboard-ready metrics.
+ *
+ * Supports two modes:
+ * - Nexus-only: tracks nexus_* tools (original)
+ * - All MCP: tracks all mcp__* tools including hub, plugins, etc.
  */
 
 import fs from 'node:fs';
@@ -47,6 +51,17 @@ export interface ToolUsefulnessAnalytics {
   leastUseful: NexusToolCallSummary[];
 }
 
+export interface ServerToolAggregate {
+  serverName: string;
+  tools: ToolUsefulnessAggregate[];
+  totalCalls: number;
+  avgScore: number;
+}
+
+export interface McpToolAnalytics extends ToolUsefulnessAnalytics {
+  byServer: ServerToolAggregate[];
+}
+
 // ─── Internal types ──────────────────────────────────────────────────────────
 
 interface ToolCallDetail {
@@ -84,6 +99,7 @@ interface SessionUsefulnessResult {
 // ─── Constants ───────────────────────────────────────────────────────────────
 
 const NEXUS_TOOL_RE = /nexus_/;
+const ALL_MCP_RE = /^mcp__/;
 const MAX_RESULT_TEXT = 1000;
 const MAX_ASSISTANT_TEXT = 500;
 const MAX_INPUT_PREVIEW = 120;
@@ -111,6 +127,30 @@ const STOPWORDS = new Set([
 function extractNexusToolName(fullName: string): string | null {
   const match = fullName.match(/(nexus_\w+)/);
   return match ? match[1]! : null;
+}
+
+/**
+ * Extract server name and short tool name from full MCP tool name.
+ * e.g. "mcp__hub__search" → { server: "hub", tool: "search" }
+ * e.g. "mcp__nexus-local__nexus_query" → { server: "nexus-local", tool: "nexus_query" }
+ * e.g. "mcp__plugin_discord_discord__reply" → { server: "plugin_discord_discord", tool: "reply" }
+ */
+export function extractMcpToolParts(fullName: string): { server: string; tool: string } | null {
+  if (!fullName.startsWith('mcp__')) return null;
+  // Find the last __ separator after the mcp__ prefix
+  const withoutPrefix = fullName.slice(5); // skip "mcp__"
+  const lastIdx = withoutPrefix.lastIndexOf('__');
+  if (lastIdx <= 0) return null;
+  return {
+    server: withoutPrefix.slice(0, lastIdx),
+    tool: withoutPrefix.slice(lastIdx + 2),
+  };
+}
+
+function extractShortMcpName(fullName: string): string {
+  const parts = extractMcpToolParts(fullName);
+  if (parts) return `${parts.server}:${parts.tool}`;
+  return fullName;
 }
 
 function extractTextFromContent(content: unknown): string {
@@ -508,5 +548,261 @@ export async function computeToolUsefulnessAnalytics(
     dailyScores,
     topUseful,
     leastUseful,
+  };
+}
+
+// ─── All-MCP Tool Scanner ────────────────────────────────────────────────────
+
+/**
+ * Scan a session for ALL MCP tool calls (mcp__*), not just nexus_*.
+ * Uses the same scoring and correlation logic as the nexus scanner.
+ */
+export function scanSessionAllMcpTools(jsonlPath: string): SessionUsefulnessResult | null {
+  let fileContent: string;
+  try {
+    fileContent = fs.readFileSync(jsonlPath, 'utf-8');
+  } catch {
+    return null;
+  }
+
+  let sessionId = '';
+  let cwd = '';
+  let startedAt = '';
+
+  const pendingToolUses = new Map<string, { name: string; shortName: string; input: Record<string, unknown>; timestamp: string }>();
+  const completedCalls: ToolCallDetail[] = [];
+  let awaitingNextAssistantIdx: number | null = null;
+
+  for (const line of fileContent.split('\n')) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+
+    let parsed: RawLine;
+    try {
+      parsed = JSON.parse(trimmed) as RawLine;
+    } catch {
+      continue;
+    }
+
+    if (parsed.type === 'progress') continue;
+    if (!parsed.uuid || !parsed.timestamp) continue;
+
+    if (!sessionId && parsed.sessionId) sessionId = parsed.sessionId;
+    if (!cwd && parsed.cwd) cwd = parsed.cwd;
+    if (!startedAt) startedAt = parsed.timestamp;
+
+    const role = parsed.message?.role;
+    const content = parsed.message?.content;
+    if (!role || !content) continue;
+
+    const contentArr: unknown[] = Array.isArray(content) ? content : [];
+
+    if (role === 'assistant') {
+      if (awaitingNextAssistantIdx !== null) {
+        const textBlocks = contentArr
+          .filter((b): b is { type: string; text: string } =>
+            typeof b === 'object' && b !== null && (b as Record<string, unknown>)['type'] === 'text')
+          .map((b) => b.text)
+          .join('\n');
+        if (textBlocks && completedCalls[awaitingNextAssistantIdx]) {
+          completedCalls[awaitingNextAssistantIdx]!.nextAssistantText = trunc(textBlocks, MAX_ASSISTANT_TEXT);
+        }
+        awaitingNextAssistantIdx = null;
+      }
+
+      for (const block of contentArr) {
+        if (typeof block !== 'object' || block === null) continue;
+        const b = block as Record<string, unknown>;
+        if (b['type'] !== 'tool_use') continue;
+
+        const name = b['name'] as string;
+        if (!name || !ALL_MCP_RE.test(name)) continue;
+
+        const shortName = extractShortMcpName(name);
+        const toolUseId = b['id'] as string;
+        const input = (b['input'] as Record<string, unknown>) ?? {};
+
+        pendingToolUses.set(toolUseId, { name, shortName, input, timestamp: parsed.timestamp });
+      }
+    } else if (role === 'user') {
+      for (const block of contentArr) {
+        if (typeof block !== 'object' || block === null) continue;
+        const b = block as Record<string, unknown>;
+        if (b['type'] !== 'tool_result') continue;
+
+        const toolUseId = b['tool_use_id'] as string;
+        if (!toolUseId) continue;
+
+        const pending = pendingToolUses.get(toolUseId);
+        if (!pending) continue;
+
+        const resultText = trunc(extractTextFromContent(b['content']), MAX_RESULT_TEXT);
+        // Use nexus-specific parsing for nexus tools, generic for others
+        const nexusName = extractNexusToolName(pending.name);
+        const { count, hasResults } = nexusName
+          ? parseResultMetrics(nexusName, resultText)
+          : parseResultMetrics(pending.shortName, resultText);
+
+        completedCalls.push({
+          toolUseId,
+          toolName: pending.shortName,
+          input: pending.input,
+          resultText,
+          resultLength: resultText.length,
+          resultCount: count,
+          hasResults,
+          nextAssistantText: '',
+          positionIndex: completedCalls.length,
+          timestamp: pending.timestamp,
+        });
+
+        awaitingNextAssistantIdx = completedCalls.length - 1;
+        pendingToolUses.delete(toolUseId);
+      }
+    }
+  }
+
+  if (completedCalls.length === 0) return null;
+
+  const toolCalls: NexusToolCallSummary[] = completedCalls.map((detail) => {
+    const { score, signals } = scoreToolCall(detail, completedCalls);
+    return {
+      toolName: detail.toolName,
+      inputPreview: trunc(JSON.stringify(detail.input), MAX_INPUT_PREVIEW),
+      resultPreview: trunc(detail.resultText, MAX_RESULT_PREVIEW),
+      usefulnessScore: Math.round(score * 100) / 100,
+      signals,
+      sessionId: sessionId || path.basename(jsonlPath, '.jsonl'),
+      timestamp: detail.timestamp,
+    };
+  });
+
+  return {
+    sessionId: sessionId || path.basename(jsonlPath, '.jsonl'),
+    cwd,
+    startedAt,
+    toolCalls,
+  };
+}
+
+// ─── All-MCP Aggregator ──────────────────────────────────────────────────────
+
+function buildByServer(byTool: ToolUsefulnessAggregate[]): ServerToolAggregate[] {
+  const serverMap = new Map<string, ToolUsefulnessAggregate[]>();
+
+  for (const tool of byTool) {
+    const colonIdx = tool.toolName.indexOf(':');
+    const server = colonIdx > 0 ? tool.toolName.slice(0, colonIdx) : 'other';
+    const existing = serverMap.get(server) ?? [];
+    existing.push(tool);
+    serverMap.set(server, existing);
+  }
+
+  return [...serverMap.entries()]
+    .map(([serverName, tools]) => {
+      const totalCalls = tools.reduce((s, t) => s + t.totalCalls, 0);
+      const avgScore = totalCalls > 0
+        ? Math.round((tools.reduce((s, t) => s + t.avgScore * t.totalCalls, 0) / totalCalls) * 100) / 100
+        : 0;
+      return { serverName, tools, totalCalls, avgScore };
+    })
+    .sort((a, b) => b.totalCalls - a.totalCalls);
+}
+
+export async function computeAllMcpToolAnalytics(
+  claudeDir: string,
+  opts: ComputeUsefulnessOptions = {},
+): Promise<McpToolAnalytics> {
+  const sessions = await listSessions(claudeDir);
+
+  const cutoff = opts.sinceDays
+    ? new Date(Date.now() - opts.sinceDays * 86400000).toISOString()
+    : undefined;
+
+  const filtered = cutoff
+    ? sessions.filter((s) => s.startedAt >= cutoff)
+    : sessions;
+
+  const allCalls: NexusToolCallSummary[] = [];
+  const dailyMap = new Map<string, { totalScore: number; count: number }>();
+
+  for (const s of filtered) {
+    const result = scanSessionAllMcpTools(s.jsonlPath);
+    if (!result) continue;
+
+    for (const call of result.toolCalls) {
+      allCalls.push(call);
+      const date = call.timestamp.slice(0, 10);
+      const entry = dailyMap.get(date) ?? { totalScore: 0, count: 0 };
+      entry.totalScore += call.usefulnessScore;
+      entry.count++;
+      dailyMap.set(date, entry);
+    }
+  }
+
+  if (allCalls.length === 0) {
+    return {
+      overallScore: 0,
+      totalToolCalls: 0,
+      byTool: [],
+      byServer: [],
+      dailyScores: [],
+      topUseful: [],
+      leastUseful: [],
+    };
+  }
+
+  const overallScore = Math.round(
+    (allCalls.reduce((s, c) => s + c.usefulnessScore, 0) / allCalls.length) * 100,
+  ) / 100;
+
+  const toolMap = new Map<string, { scores: number[]; emptyCount: number; chainCount: number; refCount: number }>();
+  for (const call of allCalls) {
+    const entry = toolMap.get(call.toolName) ?? { scores: [], emptyCount: 0, chainCount: 0, refCount: 0 };
+    entry.scores.push(call.usefulnessScore);
+
+    const resultSignal = call.signals.find((s) => s.type === 'result_content');
+    if (resultSignal && resultSignal.score === 0) entry.emptyCount++;
+
+    const chainSignal = call.signals.find((s) => s.type === 'sequential_chain');
+    if (chainSignal && chainSignal.score > 0) entry.chainCount++;
+
+    const refSignal = call.signals.find((s) => s.type === 'direct_reference');
+    if (refSignal && refSignal.score > 0) entry.refCount++;
+
+    toolMap.set(call.toolName, entry);
+  }
+
+  const byTool: ToolUsefulnessAggregate[] = [...toolMap.entries()]
+    .map(([toolName, { scores, emptyCount, chainCount, refCount }]) => ({
+      toolName,
+      totalCalls: scores.length,
+      avgScore: Math.round((scores.reduce((s, v) => s + v, 0) / scores.length) * 100) / 100,
+      emptyResultRate: Math.round((emptyCount / scores.length) * 100) / 100,
+      followUpRate: Math.round((chainCount / scores.length) * 100) / 100,
+      referenceRate: Math.round((refCount / scores.length) * 100) / 100,
+    }))
+    .sort((a, b) => b.avgScore - a.avgScore);
+
+  const byServer = buildByServer(byTool);
+
+  const dailyScores = [...dailyMap.entries()]
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([date, { totalScore, count }]) => ({
+      date,
+      avgScore: Math.round((totalScore / count) * 100) / 100,
+      calls: count,
+    }));
+
+  const sorted = [...allCalls].sort((a, b) => b.usefulnessScore - a.usefulnessScore);
+
+  return {
+    overallScore,
+    totalToolCalls: allCalls.length,
+    byTool,
+    byServer,
+    dailyScores,
+    topUseful: sorted.slice(0, 10),
+    leastUseful: sorted.slice(-10).reverse(),
   };
 }

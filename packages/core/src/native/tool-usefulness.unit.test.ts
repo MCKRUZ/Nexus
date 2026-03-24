@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
-import { parseResultMetrics, scoreToolCall, scanSessionToolUsefulness } from './tool-usefulness.js';
+import { parseResultMetrics, scoreToolCall, scanSessionToolUsefulness, scanSessionAllMcpTools, extractMcpToolParts } from './tool-usefulness.js';
 
 function makeTempDir(): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'nexus-usefulness-'));
@@ -236,5 +236,125 @@ describe('scanSessionToolUsefulness', () => {
     const result = scanSessionToolUsefulness(filePath);
     expect(result).not.toBeNull();
     expect(result!.toolCalls[0]!.usefulnessScore).toBeLessThan(0.3);
+  });
+});
+
+// ─── extractMcpToolParts ─────────────────────────────────────────────────────
+
+describe('extractMcpToolParts', () => {
+  it('extracts hub tool parts', () => {
+    const parts = extractMcpToolParts('mcp__hub__search');
+    expect(parts).toEqual({ server: 'hub', tool: 'search' });
+  });
+
+  it('extracts nexus-local tool parts', () => {
+    const parts = extractMcpToolParts('mcp__nexus-local__nexus_query');
+    expect(parts).not.toBeNull();
+    expect(parts!.server).toBe('nexus-local');
+  });
+
+  it('extracts plugin tool parts with underscores', () => {
+    const parts = extractMcpToolParts('mcp__plugin_discord_discord__reply');
+    expect(parts).not.toBeNull();
+    expect(parts!.server).toBe('plugin_discord_discord');
+    expect(parts!.tool).toBe('reply');
+  });
+
+  it('returns null for non-MCP tool names', () => {
+    expect(extractMcpToolParts('Read')).toBeNull();
+    expect(extractMcpToolParts('Bash')).toBeNull();
+  });
+});
+
+// ─── scanSessionAllMcpTools ──────────────────────────────────────────────────
+
+describe('scanSessionAllMcpTools', () => {
+  let tmpDir: string;
+
+  beforeEach(() => {
+    tmpDir = makeTempDir();
+  });
+
+  afterEach(() => {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  function makeHubToolUse(toolName: string, input: Record<string, unknown>, id?: string): string {
+    return makeJsonlLine({
+      type: 'assistant',
+      message: {
+        role: 'assistant',
+        content: [
+          { type: 'tool_use', id: id ?? `toolu_${Math.random().toString(36).slice(2)}`, name: `mcp__hub__${toolName}`, input },
+        ],
+      },
+    });
+  }
+
+  it('returns null for session with no MCP tools', () => {
+    const jsonl = [
+      makeJsonlLine({ message: { role: 'user', content: [{ type: 'text', text: 'Hello' }] } }),
+      makeJsonlLine({ message: { role: 'assistant', content: [{ type: 'text', text: 'Hi!' }] } }),
+    ].join('\n');
+    const filePath = path.join(tmpDir, 'no-mcp.jsonl');
+    fs.writeFileSync(filePath, jsonl);
+    expect(scanSessionAllMcpTools(filePath)).toBeNull();
+  });
+
+  it('scans hub tool calls', () => {
+    const toolId = 'toolu_hub1';
+    const jsonl = [
+      makeHubToolUse('search', { query: 'github repos' }, toolId),
+      makeToolResult(toolId, 'Found 3 tools matching "github repos":\n- github_search_repositories'),
+      makeAssistantText('I found the GitHub search tool'),
+    ].join('\n');
+    const filePath = path.join(tmpDir, 'hub-session.jsonl');
+    fs.writeFileSync(filePath, jsonl);
+
+    const result = scanSessionAllMcpTools(filePath);
+    expect(result).not.toBeNull();
+    expect(result!.toolCalls).toHaveLength(1);
+    expect(result!.toolCalls[0]!.toolName).toBe('hub:search');
+  });
+
+  it('scans mixed nexus and hub tools together', () => {
+    const hubId = 'toolu_hub2';
+    const nexusId = 'toolu_nex1';
+    const jsonl = [
+      makeHubToolUse('search', { query: 'context7' }, hubId),
+      makeToolResult(hubId, 'Found 2 tools'),
+      makeToolUse('nexus_query', { query: 'auth patterns' }, nexusId),
+      makeToolResult(nexusId, 'Found 5 results for "auth patterns"'),
+      makeAssistantText('Combined results from hub and nexus'),
+    ].join('\n');
+    const filePath = path.join(tmpDir, 'mixed.jsonl');
+    fs.writeFileSync(filePath, jsonl);
+
+    const result = scanSessionAllMcpTools(filePath);
+    expect(result).not.toBeNull();
+    expect(result!.toolCalls).toHaveLength(2);
+    const toolNames = result!.toolCalls.map((c) => c.toolName);
+    expect(toolNames).toContain('hub:search');
+    expect(toolNames).toContain('nexus-local:nexus_query');
+  });
+
+  it('groups tools by server in aggregation', () => {
+    const id1 = 'toolu_h1';
+    const id2 = 'toolu_h2';
+    const id3 = 'toolu_n1';
+    const jsonl = [
+      makeHubToolUse('search', { query: 'test' }, id1),
+      makeToolResult(id1, 'Found 2 tools'),
+      makeHubToolUse('execute', { code: 'call_tool("github_list_repos", {})' }, id2),
+      makeToolResult(id2, 'Executed successfully'),
+      makeToolUse('nexus_query', { query: 'patterns' }, id3),
+      makeToolResult(id3, 'Found 3 results for "patterns"'),
+    ].join('\n');
+    const filePath = path.join(tmpDir, 'multi-server.jsonl');
+    fs.writeFileSync(filePath, jsonl);
+
+    const result = scanSessionAllMcpTools(filePath);
+    expect(result).not.toBeNull();
+    expect(result!.toolCalls).toHaveLength(3);
   });
 });

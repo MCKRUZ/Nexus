@@ -6,8 +6,8 @@ import Database from 'better-sqlite3';
 import { Hono } from 'hono';
 import { cors } from 'hono/cors';
 import { serveStatic } from '@hono/node-server/serve-static';
-import { NexusService, isInitialized, listSessions, getSessionDetail, getNativeStats, computeSessionAnalytics, computeTokenAnalytics, computeContextOverhead, buildSessionSnapshot, getPricing, calculateCost, computeToolUsefulnessAnalytics } from '@nexus/core';
-import type { SessionAnalytics, TokenAnalytics, ContextOverhead, DoctorReport, PipelineStats, ModelPricing, LlmCostSummary, ToolUsefulnessAnalytics } from '@nexus/core';
+import { NexusService, isInitialized, listSessions, getSessionDetail, getNativeStats, computeSessionAnalytics, computeTokenAnalytics, computeContextOverhead, buildSessionSnapshot, getPricing, calculateCost, computeToolUsefulnessAnalytics, computeAllMcpToolAnalytics } from '@nexus/core';
+import type { SessionAnalytics, TokenAnalytics, ContextOverhead, DoctorReport, PipelineStats, ModelPricing, LlmCostSummary, ToolUsefulnessAnalytics, McpToolAnalytics } from '@nexus/core';
 import type { DecisionKind, UpsertNoteParams } from '@nexus/core';
 
 const app = new Hono();
@@ -786,6 +786,25 @@ app.get('/api/analytics/sessions', async (c) => {
   try {
     const data = await computeSessionAnalytics(CLAUDE_DIR, { sinceDays });
     sessionAnalyticsCache = { data, at: Date.now() };
+    return c.json(data);
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : 'Unknown error';
+    return c.json({ error: msg }, 500);
+  }
+});
+
+let mcpToolCache: { data: McpToolAnalytics; at: number; sinceDays: number } | null = null;
+
+app.get('/api/analytics/mcp-tools', async (c) => {
+  const sinceDays = parseInt(c.req.query('since') ?? '30', 10);
+
+  if (mcpToolCache && mcpToolCache.sinceDays === sinceDays && Date.now() - mcpToolCache.at < 120_000) {
+    return c.json(mcpToolCache.data);
+  }
+
+  try {
+    const data = await computeAllMcpToolAnalytics(CLAUDE_DIR, { sinceDays });
+    mcpToolCache = { data, at: Date.now(), sinceDays };
     return c.json(data);
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : 'Unknown error';

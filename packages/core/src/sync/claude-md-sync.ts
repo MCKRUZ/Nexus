@@ -33,6 +33,12 @@ export interface PortfolioEntry {
   parentId?: string;    // For structural relationship detection
 }
 
+export interface ToolInsight {
+  name: string;
+  score: number;
+  calls?: number;
+}
+
 export interface SyncInput {
   projectPath: string;
   notes: Note[];              // own-project notes
@@ -40,6 +46,7 @@ export interface SyncInput {
   decisions: Decision[];      // own-project decisions
   conflicts: Conflict[];      // open conflicts involving this project
   relatedProjectNotes?: Array<{ projectName: string; notes: Note[] }>;
+  toolInsights?: { topTools: ToolInsight[]; lowTools: ToolInsight[] };
 }
 
 export interface SyncResult {
@@ -154,6 +161,21 @@ function buildLines(input: SyncInput, opts: {
       if (d.rationale) lines.push(`  > ${d.rationale}`);
     }
     lines.push('');
+  }
+
+  // ── Tool Insights ────────────────────────────────────────────────────────
+  if (input.toolInsights) {
+    const { topTools, lowTools } = input.toolInsights;
+    if (topTools.length > 0 || lowTools.length > 0) {
+      lines.push('### Tool Insights');
+      if (topTools.length > 0) {
+        lines.push(`- **Top tools**: ${topTools.map((t) => `${t.name} (${Math.round(t.score * 100)}%)`).join(', ')}`);
+      }
+      if (lowTools.length > 0) {
+        lines.push(`- **Low value**: ${lowTools.map((t) => `${t.name} (${Math.round(t.score * 100)}%, ${t.calls} calls)`).join(', ')}`);
+      }
+      lines.push('');
+    }
   }
 
   // ── Active Conflicts ───────────────────────────────────────────────────────
