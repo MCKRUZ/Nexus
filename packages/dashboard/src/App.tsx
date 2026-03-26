@@ -18,6 +18,9 @@ import { Settings } from './pages/Settings.js';
 import { Health } from './pages/Health.js';
 import { Sessions } from './pages/Sessions.js';
 import { ClaudeConfig } from './pages/ClaudeConfig.js';
+import { SessionInsights } from './pages/SessionInsights.js';
+import { BudgetAlerts } from './pages/BudgetAlerts.js';
+import { ContextExplorer } from './pages/ContextExplorer.js';
 
 const FAST_POLL_MS = 1_000;
 const SLOW_POLL_MS = 10_000;
@@ -206,11 +209,20 @@ export function App() {
           <NavLink to="/tokens" className={({ isActive }) => isActive ? 'active' : ''}>
             <span className="icon">⊛</span> Token Audit
           </NavLink>
+          <NavLink to="/budget" className={({ isActive }) => isActive ? 'active' : ''}>
+            <span className="icon">$</span> Budget Alerts
+          </NavLink>
           <NavLink to="/observability" className={({ isActive }) => isActive ? 'active' : ''}>
             <span className="icon">⬡</span> Observability
           </NavLink>
           <NavLink to="/sessions" className={({ isActive }) => isActive ? 'active' : ''}>
             <span className="icon">▶</span> Session Audit
+          </NavLink>
+          <NavLink to="/context-explorer" className={({ isActive }) => isActive ? 'active' : ''}>
+            <span className="icon">◈</span> Context Explorer
+          </NavLink>
+          <NavLink to="/insights" className={({ isActive }) => isActive ? 'active' : ''}>
+            <span className="icon">⊕</span> Session Insights
           </NavLink>
           <NavLink to="/health" className={({ isActive }) => isActive ? 'active' : ''}>
             <span className="icon">♥</span> Health
@@ -240,8 +252,11 @@ export function App() {
           <Route path="/search" element={<PageShell title="Search"><Search /></PageShell>} />
           <Route path="/analytics" element={<PageShell title="Nexus Analytics"><Analytics /></PageShell>} />
           <Route path="/tokens" element={<PageShell title="Token Audit"><TokenAudit /></PageShell>} />
+          <Route path="/budget" element={<PageShell title="Budget Alerts"><BudgetAlerts /></PageShell>} />
           <Route path="/observability" element={<PageShell title="LLM Observability"><Observability /></PageShell>} />
           <Route path="/sessions" element={<PageShell title="Session Audit"><Sessions /></PageShell>} />
+          <Route path="/context-explorer" element={<PageShell title="Context Explorer"><ContextExplorer /></PageShell>} />
+          <Route path="/insights" element={<PageShell title="Session Insights"><SessionInsights /></PageShell>} />
           <Route path="/claude-config" element={<PageShell title="Claude Config"><ClaudeConfig /></PageShell>} />
           <Route path="/health" element={<PageShell title="System Health"><Health /></PageShell>} />
           <Route path="/settings" element={<PageShell title="Settings"><Settings /></PageShell>} />
