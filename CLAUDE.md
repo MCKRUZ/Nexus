@@ -59,7 +59,8 @@ After changes: `pnpm build && pnpm test`
 - Principle: CLAUDE.md = headlines. Full detail lives in the DB. Use `nexus query` to surface it.
 
 ### MCP Tool Naming
-All MCP tools use the `nexus_` prefix: `nexus_query`, `nexus_decide`, `nexus_pattern`, `nexus_record_pattern`, `nexus_check_conflicts`, `nexus_dependencies`, `nexus_preferences`, `nexus_note`
+All MCP tools use the `nexus_` prefix: `nexus_query`, `nexus_decide`, `nexus_pattern`, `nexus_check_conflicts`, `nexus_dependencies`, `nexus_preferences`, `nexus_note`
+Note: `nexus_pattern` has `action: "search" | "record"` (consolidated from former `nexus_record_pattern`)
 
 ### Package Boundaries
 - `packages/core` has ZERO CLI/MCP-specific code — it is the pure logic layer
@@ -124,11 +125,12 @@ When compacting, preserve:
 ## Nexus Intelligence
 
 *Auto-updated by Nexus — do not edit this section manually.*
-*Last sync: 2026-03-23*
+*Last sync: 2026-03-26*
 
 ### Portfolio
 | Project | Description | Tech |
 |---------|------------|------|
+| personal-brand-assistant | — | — |
 | project-avatar | — | — |
 | ComfyUI | **ComfyUI** — the main local ComfyUI installation at E:/ComfyUI-Easy-Install/Co… | — |
 | sage-voice | **sage-voice** — MCKRUZ project for Sage's voice capabilities.
@@ -144,6 +146,16 @@ Sage is the AI … | — |
 | _+27 inactive_ | — | — |
 
 ### Project Context
+#### Roadmap: Next Features
+User-approved feature ideas (2026-03-24):
+
+1. **MCP Tool Intelligence Layer** — Nexus sits on mcp-hub, learns which tools succeed/fail per project, i…
+*Tags: roadmap, features, mcp-hub, planning*
+
+#### Backlog: Show all active MCP servers in Claude Config tab
+The Claude Config dashboard page only shows MCP servers from settings.json/settings.local.json, not the full set of running servers (plugins + projec…
+*Tags: backlog, dashboard, mcp, claude-config*
+
 #### Token Budget Optimization Session - 2026-03-18
 ## Token Budget Optimizations Applied
 
@@ -164,6 +176,10 @@ Sage is the AI … | — |
 (1) OpenClaw agent fallback chain requires tool-capable models; dolphin-llama3 doesn't support tools so was removed; llama3.1:8b being pulled as Olla…
 *Tags: openclaw, ollama, hooks, bug-fix*
 
+### Context from openclaw
+#### OpenClaw Ollama Integration & Stop Hook Architecture
+(1) OpenClaw uses agent model fallback chains requiring tool-capable models (Claude Opus/Sonnet, llama3.1:8b); (2) Two separate Ollama patterns: Open…
+
 ### Recorded Decisions
 - **[security]** Add database-level CHECK constraints on tier and severity enum columns
   > Enforce valid values at storage layer to prevent invalid state propagation
@@ -176,7 +192,7 @@ Sage is the AI … | — |
 - **[security]** Use taskkill /F for forceful process termination without waiting for graceful s…
   > Installer must ensure clean file access; graceful shutdown unnecessary for pre-install cleanup
 
-> **Cross-project rule**: Before making decisions that affect shared concerns (APIs, auth, data formats, deployment), run `nexus_query` to check for existing decisions and conflicts across the portfolio.
+> **Cross-project rule**: Before making decisions that affect shared concerns (APIs, auth, data formats, deployment) or asking the user for server/SSH/infrastructure details, run `nexus_query` to check for existing decisions, notes, and conflicts across the portfolio.
 
 *[Nexus: run `nexus query` to search full knowledge base]*
 <!-- nexus:end -->

@@ -34,7 +34,7 @@ function withService<T>(fn: (svc: NexusService) => T): T {
 
 server.tool(
   'nexus_query',
-  'Full-text search across the Nexus knowledge graph (decisions, patterns, preferences). Use this to look up architectural decisions made across projects, patterns, or preferences before making new choices.',
+  'Search decisions, patterns, and preferences across projects.',
   {
     query: z.string().describe('Search query — keywords, technology names, or topic'),
     projectId: z.string().uuid().optional().describe('Scope to a specific project (omit for all projects)'),
@@ -97,7 +97,7 @@ server.tool(
 
 server.tool(
   'nexus_decide',
-  'Record an architectural decision made during this Claude Code session. Call this when you and the user agree on a significant technical choice (library selection, architecture pattern, naming convention, etc.).',
+  'Record an architectural decision for a project.',
   {
     projectPath: z.string().describe('Absolute path to the project directory (use process.cwd() if unsure)'),
     kind: z.enum(['architecture', 'library', 'pattern', 'naming', 'security', 'other']).describe('Type of decision'),
@@ -167,119 +167,102 @@ server.tool(
 
 server.tool(
   'nexus_pattern',
-  'Search for code patterns used across projects. Useful before implementing something to find if a similar pattern already exists in the portfolio.',
+  'Search or record code patterns. Actions: search, record.',
   {
-    query: z.string().describe('Pattern name or description to search for'),
-    projectPath: z.string().optional().describe('Scope to a specific project path'),
+    action: z.enum(['search', 'record']).describe('Operation: "search" to find patterns, "record" to save one'),
+    query: z.string().optional().describe('Search query (required for search)'),
+    projectPath: z.string().optional().describe('Project path (required for record, optional for search)'),
+    name: z.string().max(200).optional().describe('Pattern name (required for record)'),
+    description: z.string().max(1000).optional().describe('Pattern description (required for record)'),
+    examplePath: z.string().optional().describe('File path exemplifying this pattern (for record)'),
   },
-  async ({ query, projectPath }) => {
-    const results = withService((svc) => {
-      let project: ReturnType<typeof svc.getProjectByPath> = undefined;
-      let projectId: string | undefined;
-      if (projectPath) {
-        project = svc.getProjectByPath(projectPath);
-        if (!project) {
-          return { error: `No project registered at "${projectPath}"` };
-        }
-        projectId = project.id;
+  async ({ action, query, projectPath, name, description, examplePath }) => {
+    if (action === 'search') {
+      if (!query) {
+        return { content: [{ type: 'text', text: 'query is required for search' }], isError: true };
       }
 
-      const ownPatterns = svc.query({ query, ...(projectId ? { projectId } : {}), kinds: ['pattern'], limit: 20 }).patterns;
+      const results = withService((svc) => {
+        let project: ReturnType<typeof svc.getProjectByPath> = undefined;
+        let projectId: string | undefined;
+        if (projectPath) {
+          project = svc.getProjectByPath(projectPath);
+          if (!project) return { error: `No project registered at "${projectPath}"` };
+          projectId = project.id;
+        }
 
-      // Cross-project patterns from parent/child projects
-      const crossLines: string[] = [];
-      if (project) {
-        const allProjects = svc.listProjects();
-        const related = allProjects.filter(
-          (p) => p.id !== project!.id && (p.parentId === project!.id || project!.parentId === p.id),
-        );
-        for (const rel of related.slice(0, 3)) {
-          const relPatterns = svc.query({ query, projectId: rel.id, kinds: ['pattern'], limit: 5 }).patterns;
-          for (const p of relPatterns.slice(0, 2)) {
-            crossLines.push(`- **${p.name}** [from: ${rel.name}] (×${p.frequency}): ${p.description}`);
+        const ownPatterns = svc.query({ query, ...(projectId ? { projectId } : {}), kinds: ['pattern'], limit: 20 }).patterns;
+
+        const crossLines: string[] = [];
+        if (project) {
+          const allProjects = svc.listProjects();
+          const related = allProjects.filter(
+            (p) => p.id !== project!.id && (p.parentId === project!.id || project!.parentId === p.id),
+          );
+          for (const rel of related.slice(0, 3)) {
+            const relPatterns = svc.query({ query, projectId: rel.id, kinds: ['pattern'], limit: 5 }).patterns;
+            for (const p of relPatterns.slice(0, 2)) {
+              crossLines.push(`- **${p.name}** [from: ${rel.name}] (×${p.frequency}): ${p.description}`);
+            }
           }
         }
+
+        return { patterns: ownPatterns, crossLines };
+      });
+
+      if ('error' in results) {
+        return { content: [{ type: 'text', text: results.error }], isError: true };
       }
 
-      return { patterns: ownPatterns, crossLines };
-    });
-
-    if ('error' in results) {
-      return { content: [{ type: 'text', text: results.error }], isError: true };
-    }
-
-    if (results.patterns.length === 0 && results.crossLines.length === 0) {
-      return { content: [{ type: 'text', text: `No patterns found matching "${query}".` }] };
-    }
-
-    const lines = [`## Patterns matching "${query}" (${results.patterns.length}):\n`];
-    for (const p of results.patterns) {
-      lines.push(`### ${p.name} (×${p.frequency})`);
-      lines.push(p.description);
-      if (p.examplePath) lines.push(`*Example:* \`${p.examplePath}\``);
-      lines.push('');
-    }
-
-    if (results.crossLines.length > 0) {
-      lines.push(`## From related projects\n${results.crossLines.join('\n')}`);
-    }
-
-    return { content: [{ type: 'text', text: lines.join('\n') }] };
-  },
-);
-
-// ─── nexus_record_pattern ─────────────────────────────────────────────────────
-
-server.tool(
-  'nexus_record_pattern',
-  'Record a recurring code pattern observed during this session. Use when you notice a consistent implementation approach being used or established in a project (e.g., a specific error handling pattern, a naming convention for files, a preferred way to structure API calls).',
-  {
-    projectPath: z.string().describe('Absolute path to the project directory'),
-    name: z.string().max(200).describe('Short name for the pattern (e.g., "Repository pattern", "Try-catch-rethrow")'),
-    description: z.string().max(1000).describe('What the pattern is and how it is used'),
-    examplePath: z.string().optional().describe('File path that exemplifies this pattern'),
-  },
-  async ({ projectPath, name, description, examplePath }) => {
-    const result = withService((svc) => {
-      const project = svc.getProjectByPath(projectPath);
-      if (!project) {
-        return { error: `No Nexus project registered at "${projectPath}". Run \`nexus project add ${projectPath}\` to register it.` };
+      if (results.patterns.length === 0 && results.crossLines.length === 0) {
+        return { content: [{ type: 'text', text: `No patterns found matching "${query}".` }] };
       }
 
-      const pattern = svc.upsertPattern(
-        {
-          projectId: project.id,
-          name,
-          description,
-          ...(examplePath ? { examplePath } : {}),
-        },
-        'mcp',
-      );
+      const lines = [`## Patterns matching "${query}" (${results.patterns.length}):\n`];
+      for (const p of results.patterns) {
+        lines.push(`### ${p.name} (×${p.frequency})`);
+        lines.push(p.description);
+        if (p.examplePath) lines.push(`*Example:* \`${p.examplePath}\``);
+        lines.push('');
+      }
 
-      return { pattern, projectName: project.name };
-    });
+      if (results.crossLines.length > 0) {
+        lines.push(`## From related projects\n${results.crossLines.join('\n')}`);
+      }
 
-    if ('error' in result) {
-      return { content: [{ type: 'text', text: result.error }], isError: true };
+      return { content: [{ type: 'text', text: lines.join('\n') }] };
     }
 
-    return {
-      content: [
-        {
+    if (action === 'record') {
+      if (!projectPath) return { content: [{ type: 'text', text: 'projectPath is required for record' }], isError: true };
+      if (!name) return { content: [{ type: 'text', text: 'name is required for record' }], isError: true };
+      if (!description) return { content: [{ type: 'text', text: 'description is required for record' }], isError: true };
+
+      const result = withService((svc) => {
+        const project = svc.getProjectByPath(projectPath);
+        if (!project) {
+          return { error: `No Nexus project registered at "${projectPath}". Run \`nexus project add ${projectPath}\` to register it.` };
+        }
+        const pattern = svc.upsertPattern(
+          { projectId: project.id, name, description, ...(examplePath ? { examplePath } : {}) },
+          'mcp',
+        );
+        return { pattern, projectName: project.name };
+      });
+
+      if ('error' in result) {
+        return { content: [{ type: 'text', text: result.error }], isError: true };
+      }
+
+      return {
+        content: [{
           type: 'text',
-          text: [
-            `✓ Pattern recorded for project **${result.projectName}**:`,
-            ``,
-            `- **Name:** ${result.pattern.name}`,
-            `- **Description:** ${result.pattern.description}`,
-            `- **Frequency:** ×${result.pattern.frequency}`,
-            result.pattern.examplePath ? `- **Example:** \`${result.pattern.examplePath}\`` : null,
-          ]
-            .filter(Boolean)
-            .join('\n'),
-        },
-      ],
-    };
+          text: `✓ Pattern recorded for **${result.projectName}**: ${result.pattern.name} (×${result.pattern.frequency})`,
+        }],
+      };
+    }
+
+    return { content: [{ type: 'text', text: 'Unknown action' }], isError: true };
   },
 );
 
@@ -287,7 +270,7 @@ server.tool(
 
 server.tool(
   'nexus_check_conflicts',
-  'Check for conflicting decisions or patterns across projects. Use before making a decision that could conflict with choices made in related projects.',
+  'Check for conflicting decisions or patterns across projects.',
   {
     projectPaths: z.array(z.string()).min(1).describe('Absolute paths of projects to check against each other'),
     topic: z.string().optional().describe('Narrow conflict check to a specific topic or technology'),
@@ -364,7 +347,7 @@ server.tool(
 
 server.tool(
   'nexus_dependencies',
-  'Query the cross-project dependency graph. Shows how projects relate to each other.',
+  'Query the cross-project dependency graph.',
   {
     projectPath: z.string().describe('Absolute path of the root project to start from'),
     depth: z.number().int().min(1).max(5).default(2).describe('How many levels of relationships to traverse'),
@@ -413,7 +396,7 @@ server.tool(
 
 server.tool(
   'nexus_preferences',
-  'Look up or set developer preferences (global or project-scoped). Use to remember consistent choices like code style, preferred libraries, or workflow settings.',
+  'Get, set, or list developer preferences (global or project-scoped).',
   {
     action: z.enum(['get', 'set', 'list']).describe('"get" a specific key, "set" a key-value pair, "list" all preferences'),
     key: z.string().max(200).optional().describe('Preference key (required for get/set)'),
@@ -476,7 +459,7 @@ server.tool(
 
 server.tool(
   'nexus_note',
-  'Manage project notes — freeform context blocks that persist per-project and appear in CLAUDE.md. Use "set" to write/update a note, "list" to see all notes for a project, "get" to read one note, "delete" to remove a note, and "search" to find notes across projects.',
+  'Manage project notes that persist in CLAUDE.md. Actions: get, list, set, delete, search.',
   {
     action: z.enum(['get', 'list', 'set', 'delete', 'search']).describe('Operation to perform'),
     projectPath: z.string().optional().describe('Absolute path to the project directory (required for get/list/set)'),
@@ -653,7 +636,7 @@ server.tool(
 
 server.tool(
   'nexus_check_impact',
-  'Analyze the downstream impact of a proposed change across related projects. Call this BEFORE making breaking changes to APIs, schemas, auth patterns, or shared infrastructure.',
+  'Analyze downstream impact of a proposed change across related projects.',
   {
     projectPath: z.string().describe('Absolute path to the project where the change is being made'),
     change: z.string().describe('Description of the proposed change (e.g., "Changing gateway API from REST to gRPC")'),
@@ -702,6 +685,170 @@ server.tool(
     }
 
     return { content: [{ type: 'text', text: lines.join('\n') }] };
+  },
+);
+
+// ─── nexus_budget ───────────────────────────────────────────────────────────
+
+function parseDuration(duration: string): number {
+  const match = duration.match(/^(\d+)(m|h|d)$/);
+  if (!match) throw new Error(`Invalid duration: "${duration}". Use format like "1h", "24h", "7d".`);
+  const n = parseInt(match[1]!, 10);
+  const unit = match[2]!;
+  if (unit === 'm') return n * 60_000;
+  if (unit === 'h') return n * 3_600_000;
+  return n * 86_400_000;
+}
+
+server.tool(
+  'nexus_budget',
+  'Manage spending budgets and alerts with daily/weekly/monthly cost limits.',
+  {
+    action: z.enum(['set', 'list', 'check', 'silence', 'unsilence', 'history', 'delete'])
+      .describe('Operation: "set" budget, "list" configs, "check" current status, "silence"/"unsilence" alerts, "history" of transitions, "delete" a budget'),
+    name: z.string().max(200).optional()
+      .describe('Budget name (for set; e.g., "Daily limit", "Monthly cap")'),
+    period: z.enum(['daily', 'weekly', 'monthly']).optional()
+      .describe('Budget period (for set)'),
+    warnAt: z.number().positive().optional()
+      .describe('USD threshold to enter WARNING (for set)'),
+    critAt: z.number().positive().optional()
+      .describe('USD threshold to enter CRITICAL (for set)'),
+    projectPath: z.string().optional()
+      .describe('Project path for per-project budget (omit for global)'),
+    configId: z.string().uuid().optional()
+      .describe('Budget config ID (for silence/unsilence/delete/history)'),
+    duration: z.string().optional()
+      .describe('Silence duration (for silence; e.g., "1h", "24h", "7d")'),
+  },
+  async ({ action, name, period, warnAt, critAt, projectPath, configId, duration }) => {
+    try {
+      if (action === 'set') {
+        if (!name || !period || warnAt == null || critAt == null) {
+          return { content: [{ type: 'text', text: 'Missing required parameters: name, period, warnAt, critAt' }], isError: true };
+        }
+
+        let projectId: string | undefined;
+        if (projectPath) {
+          const project = withService((svc) => svc.getProjectByPath(projectPath));
+          if (!project) {
+            return { content: [{ type: 'text', text: `No project registered at ${projectPath}` }], isError: true };
+          }
+          projectId = project.id;
+        }
+
+        const config = withService((svc) =>
+          svc.setBudget({ projectId, name, period, warnAt, critAt }, 'mcp'),
+        );
+
+        const scope = projectId ? `project ${projectPath}` : 'global';
+        return {
+          content: [{
+            type: 'text',
+            text: `Budget "${config.name}" set (${scope}, ${config.period}):\n` +
+              `  WARNING at $${config.warnAt.toFixed(2)} (clears at $${config.warnClear.toFixed(2)})\n` +
+              `  CRITICAL at $${config.critAt.toFixed(2)} (clears at $${config.critClear.toFixed(2)})`,
+          }],
+        };
+      }
+
+      if (action === 'list') {
+        let projectId: string | undefined;
+        if (projectPath) {
+          const project = withService((svc) => svc.getProjectByPath(projectPath));
+          if (!project) {
+            return { content: [{ type: 'text', text: `No project registered at ${projectPath}` }], isError: true };
+          }
+          projectId = project.id;
+        }
+
+        const configs = withService((svc) => projectId ? svc.getBudgets(projectId) : svc.getAllBudgets());
+        if (configs.length === 0) {
+          return { content: [{ type: 'text', text: 'No budget alerts configured.' }] };
+        }
+
+        const lines = configs.map((c) => {
+          const scope = c.projectId ? `project` : 'global';
+          const silenced = c.silencedUntil && c.silencedUntil > Date.now() ? ' [SILENCED]' : '';
+          return `- **${c.name}** (${scope}, ${c.period}): warn=$${c.warnAt.toFixed(2)}, crit=$${c.critAt.toFixed(2)}${silenced} [id: ${c.id}]`;
+        });
+
+        return { content: [{ type: 'text', text: `## Budget Configs (${configs.length})\n\n${lines.join('\n')}` }] };
+      }
+
+      if (action === 'check') {
+        const svc = NexusService.open();
+        try {
+          const results = await svc.checkBudgets();
+          if (results.length === 0) {
+            return { content: [{ type: 'text', text: 'No budget alerts configured.' }] };
+          }
+
+          const lines = results.map((r) => {
+            const icon = r.status === 'critical' ? '🔴' : r.status === 'warning' ? '🟡' : '🟢';
+            const scope = r.projectName ?? 'Global';
+            const silenced = r.silenced ? ' [SILENCED]' : '';
+            return `${icon} **${r.configName}** (${scope}, ${r.period}): $${r.currentSpend.toFixed(2)} / $${r.critAt.toFixed(2)} (${Math.round(r.percentUsed)}%)${silenced}`;
+          });
+
+          return { content: [{ type: 'text', text: `## Budget Status\n\n${lines.join('\n')}` }] };
+        } finally {
+          svc.close();
+        }
+      }
+
+      if (action === 'silence') {
+        if (!configId) {
+          return { content: [{ type: 'text', text: 'Missing required parameter: configId' }], isError: true };
+        }
+        const durationMs = parseDuration(duration ?? '24h');
+        const silenced = withService((svc) => svc.silenceBudget(configId, durationMs, 'mcp'));
+        if (!silenced) {
+          return { content: [{ type: 'text', text: `Budget config ${configId} not found` }], isError: true };
+        }
+        return { content: [{ type: 'text', text: `Budget silenced for ${duration ?? '24h'}` }] };
+      }
+
+      if (action === 'unsilence') {
+        if (!configId) {
+          return { content: [{ type: 'text', text: 'Missing required parameter: configId' }], isError: true };
+        }
+        const unsilenced = withService((svc) => svc.unsilenceBudget(configId, 'mcp'));
+        if (!unsilenced) {
+          return { content: [{ type: 'text', text: `Budget config ${configId} not found` }], isError: true };
+        }
+        return { content: [{ type: 'text', text: 'Budget unsilenced' }] };
+      }
+
+      if (action === 'history') {
+        const events = withService((svc) => svc.getBudgetHistory(configId, 20));
+        if (events.length === 0) {
+          return { content: [{ type: 'text', text: 'No budget state transitions recorded.' }] };
+        }
+
+        const lines = events.map((e) => {
+          const date = new Date(e.at).toISOString().slice(0, 19).replace('T', ' ');
+          return `- ${date}: ${e.previousStatus} → ${e.newStatus} ($${e.spend.toFixed(2)}, threshold $${e.threshold.toFixed(2)})`;
+        });
+
+        return { content: [{ type: 'text', text: `## Budget Alert History\n\n${lines.join('\n')}` }] };
+      }
+
+      if (action === 'delete') {
+        if (!configId) {
+          return { content: [{ type: 'text', text: 'Missing required parameter: configId' }], isError: true };
+        }
+        const deleted = withService((svc) => svc.deleteBudget(configId, 'mcp'));
+        if (!deleted) {
+          return { content: [{ type: 'text', text: `Budget config ${configId} not found` }], isError: true };
+        }
+        return { content: [{ type: 'text', text: 'Budget config deleted' }] };
+      }
+
+      return { content: [{ type: 'text', text: `Unknown action: ${action}` }], isError: true };
+    } catch (err) {
+      return { content: [{ type: 'text', text: `Budget error: ${err instanceof Error ? err.message : String(err)}` }], isError: true };
+    }
   },
 );
 
