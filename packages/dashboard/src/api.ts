@@ -122,6 +122,48 @@ export interface NativeStats {
   projects: string[];
 }
 
+// ─── Budget types ─────────────────────────────────────────────────────────────
+
+export interface BudgetConfig {
+  id: string;
+  projectId?: string;
+  name: string;
+  period: 'daily' | 'weekly' | 'monthly';
+  warnAt: number;
+  critAt: number;
+  warnClear: number;
+  critClear: number;
+  enabled: boolean;
+  silencedUntil?: number;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface BudgetCheckResult {
+  configId: string;
+  configName: string;
+  projectId?: string;
+  projectName?: string;
+  period: 'daily' | 'weekly' | 'monthly';
+  status: 'clear' | 'warning' | 'critical';
+  currentSpend: number;
+  warnAt: number;
+  critAt: number;
+  percentUsed: number;
+  silenced: boolean;
+  transition?: { from: string; to: string };
+}
+
+export interface BudgetEvent {
+  id: string;
+  configId: string;
+  previousStatus: string;
+  newStatus: string;
+  spend: number;
+  threshold: number;
+  at: number;
+}
+
 // ─── Langfuse types ────────────────────────────────────────────────────────────
 
 export interface LangfuseDailyMetric {
@@ -802,6 +844,33 @@ export const api = {
     project: (id: string) => get<ClaudeProjectConfig>(`/claude-config/project/${id}`),
     file: (filePath: string) =>
       get<{ path: string; content: string }>(`/claude-config/file?path=${encodeURIComponent(filePath)}`),
+  },
+  budget: {
+    list: (projectId?: string) =>
+      get<BudgetConfig[]>('/budget' + (projectId ? `?projectId=${projectId}` : '')),
+    status: () => get<BudgetCheckResult[]>('/budget/status'),
+    upsert: (d: {
+      projectId?: string;
+      name: string;
+      period: 'daily' | 'weekly' | 'monthly';
+      warnAt: number;
+      critAt: number;
+    }) => post<BudgetConfig>('/budget', d),
+    delete: async (id: string) => {
+      const r = await fetch(`${BASE}/budget/${id}`, { method: 'DELETE' });
+      if (!r.ok) throw new Error(`DELETE /budget/${id} -> ${r.status}`);
+      return r.json() as Promise<{ deleted: boolean }>;
+    },
+    silence: (id: string, durationMs: number) =>
+      post<{ silenced: boolean }>(`/budget/${id}/silence`, { durationMs }),
+    unsilence: (id: string) =>
+      post<{ unsilenced: boolean }>(`/budget/${id}/unsilence`, {}),
+    history: (configId?: string, limit = 50) =>
+      get<BudgetEvent[]>(
+        '/budget/history' +
+          `?limit=${limit}` +
+          (configId ? `&configId=${configId}` : ''),
+      ),
   },
   langfuse: {
     status: () => get<{ configured: boolean }>('/langfuse/status'),

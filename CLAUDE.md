@@ -125,7 +125,7 @@ When compacting, preserve:
 ## Nexus Intelligence
 
 *Auto-updated by Nexus — do not edit this section manually.*
-*Last sync: 2026-03-26*
+*Last sync: 2026-03-29*
 
 ### Portfolio
 | Project | Description | Tech |
@@ -179,6 +179,24 @@ The Claude Config dashboard page only shows MCP servers from settings.json/setti
 ### Context from openclaw
 #### OpenClaw Ollama Integration & Stop Hook Architecture
 (1) OpenClaw uses agent model fallback chains requiring tool-capable models (Claude Opus/Sonnet, llama3.1:8b); (2) Two separate Ollama patterns: Open…
+
+### Context from personal-brand-assistant
+#### Deployment: Local Docker on Furious
+## PBA Deployment
+
+- **Host:** Furious (local machine)
+- **Runtime:** Docker Compose
+- **Branch deployed:** main
+- **Last known deploy:** manual, nee…
+*Tags: deployment, docker, furious, infrastructure*
+
+#### Website Analytics: Google Search Console + GA4
+## Website Analytics for matthewkruczek.ai
+
+### Service Account Credentials
+- **File:** `secrets/google-analytics-sa.json` (gitignored)
+- **Email:** …
+*Tags: analytics, google-search-console, ga4, matthewkruczek-ai, seo, website-stats*
 
 ### Recorded Decisions
 - **[security]** Add database-level CHECK constraints on tier and severity enum columns

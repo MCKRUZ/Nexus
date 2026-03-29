@@ -155,6 +155,69 @@ export const ClassifiedEventSchema = z.object({
 });
 export type ClassifiedEvent = z.infer<typeof ClassifiedEventSchema>;
 
+// ─── Budget Alerts ──────────────────────────────────────────────────────────
+
+export const BudgetPeriodSchema = z.enum(['daily', 'weekly', 'monthly']);
+export type BudgetPeriod = z.infer<typeof BudgetPeriodSchema>;
+
+export const BudgetAlertStatusSchema = z.enum(['clear', 'warning', 'critical']);
+export type BudgetAlertStatus = z.infer<typeof BudgetAlertStatusSchema>;
+
+export const BudgetConfigSchema = z.object({
+  id: z.string().uuid(),
+  projectId: z.string().uuid().optional(), // null = global budget
+  name: z.string().min(1).max(200),
+  period: BudgetPeriodSchema,
+  warnAt: z.number().positive(),
+  critAt: z.number().positive(),
+  warnClear: z.number().nonnegative(),
+  critClear: z.number().nonnegative(),
+  enabled: z.boolean().default(true),
+  silencedUntil: z.number().optional(),
+  createdAt: z.number(),
+  updatedAt: z.number(),
+});
+export type BudgetConfig = z.infer<typeof BudgetConfigSchema>;
+
+export const BudgetStateSchema = z.object({
+  configId: z.string().uuid(),
+  status: BudgetAlertStatusSchema,
+  currentSpend: z.number(),
+  periodStart: z.number(),
+  lastEvaluatedAt: z.number(),
+  lastTransitionAt: z.number().optional(),
+});
+export type BudgetState = z.infer<typeof BudgetStateSchema>;
+
+export const BudgetEventSchema = z.object({
+  id: z.string().uuid(),
+  configId: z.string().uuid(),
+  previousStatus: BudgetAlertStatusSchema,
+  newStatus: BudgetAlertStatusSchema,
+  spend: z.number(),
+  threshold: z.number(),
+  at: z.number(),
+});
+export type BudgetEvent = z.infer<typeof BudgetEventSchema>;
+
+export interface BudgetCheckResult {
+  configId: string;
+  configName: string;
+  projectId?: string;
+  projectName?: string;
+  period: BudgetPeriod;
+  status: BudgetAlertStatus;
+  currentSpend: number;
+  warnAt: number;
+  critAt: number;
+  percentUsed: number;
+  silenced: boolean;
+  transition?: {
+    from: BudgetAlertStatus;
+    to: BudgetAlertStatus;
+  };
+}
+
 // ─── Audit Log ────────────────────────────────────────────────────────────────
 
 export const AuditEntrySchema = z.object({

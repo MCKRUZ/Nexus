@@ -244,6 +244,33 @@ export function hookCommand(): Command {
             // Sync is best-effort — never block session teardown
           }
 
+          // 3.5. Budget check — evaluate and log state transitions
+          try {
+            if (!opts.dryRun) {
+              const budgetResults = await svc.checkBudgets();
+              for (const result of budgetResults) {
+                if (result.transition) {
+                  const msg = `Budget "${result.configName}": ${result.transition.from} -> ${result.transition.to} ($${result.currentSpend.toFixed(2)})`;
+                  if (result.status === 'critical') {
+                    if (!opts.quiet) log.warn(`CRITICAL: ${msg}`);
+                  } else if (result.status === 'warning') {
+                    if (!opts.quiet) log.warn(`WARNING: ${msg}`);
+                  } else if (!opts.quiet) {
+                    output(`Budget cleared: ${result.configName}`);
+                  }
+                }
+              }
+
+              // Re-sync CLAUDE.md with budget alerts if any are active
+              const hasActiveAlerts = budgetResults.some((r) => r.status !== 'clear' && !r.silenced);
+              if (hasActiveAlerts) {
+                svc.syncProject(project.id, budgetResults);
+              }
+            }
+          } catch {
+            // Budget check is best-effort — never block session teardown
+          }
+
           // 4. Portfolio-level conflict & advisory detection (single LLM call)
           const projectDecisions = svc.getDecisionsForProject(project.id);
           if (projectDecisions.length === 0) return;

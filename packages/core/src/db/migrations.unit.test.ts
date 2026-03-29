@@ -47,7 +47,7 @@ describe('migrateDatabase', () => {
       .prepare('SELECT MAX(version) as v FROM schema_version')
       .get() as { v: number };
 
-    expect(version.v).toBe(4);
+    expect(version.v).toBe(5);
   });
 
   it('is idempotent — running twice does not throw', () => {
@@ -55,5 +55,18 @@ describe('migrateDatabase', () => {
       migrateDatabase(db);
       migrateDatabase(db);
     }).not.toThrow();
+  });
+
+  it('migration v5 creates budget tables', () => {
+    migrateDatabase(db);
+
+    const tables = db
+      .prepare("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")
+      .all() as Array<{ name: string }>;
+
+    const tableNames = tables.map((t) => t.name);
+    expect(tableNames).toContain('budget_configs');
+    expect(tableNames).toContain('budget_state');
+    expect(tableNames).toContain('budget_events');
   });
 });

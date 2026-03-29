@@ -14,7 +14,7 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
-import type { Decision, Conflict, Note } from '../types/index.js';
+import type { Decision, Conflict, Note, BudgetCheckResult } from '../types/index.js';
 
 const SECTION_START = '<!-- nexus:start -->';
 const SECTION_END = '<!-- nexus:end -->';
@@ -46,7 +46,8 @@ export interface SyncInput {
   decisions: Decision[];      // own-project decisions
   conflicts: Conflict[];      // open conflicts involving this project
   relatedProjectNotes?: Array<{ projectName: string; notes: Note[] }>;
-  toolInsights?: { topTools: ToolInsight[]; lowTools: ToolInsight[] };
+  toolInsights?: { topTools: ToolInsight[]; lowTools: ToolInsight[] } | undefined;
+  budgetAlerts?: BudgetCheckResult[] | undefined;
 }
 
 export interface SyncResult {
@@ -192,6 +193,24 @@ function buildLines(input: SyncInput, opts: {
     const openAdvisories = input.conflicts.filter((c) => !c.resolvedAt && c.tier === 'advisory');
     if (openAdvisories.length > 0) {
       lines.push(`*${openAdvisories.length} cross-project advisor${openAdvisories.length === 1 ? 'y' : 'ies'} — run \`nexus query\` for details*`);
+      lines.push('');
+    }
+  }
+
+  // ── Budget Alerts ──────────────────────────────────────────────────────────
+  if (input.budgetAlerts && input.budgetAlerts.length > 0) {
+    const activeAlerts = input.budgetAlerts.filter(
+      (b) => b.status !== 'clear' && !b.silenced,
+    );
+    if (activeAlerts.length > 0) {
+      lines.push('### Budget Alerts');
+      for (const alert of activeAlerts) {
+        const icon = alert.status === 'critical' ? 'CRITICAL' : 'WARNING';
+        const scope = alert.projectName ?? 'Global';
+        lines.push(
+          `- **[${icon}]** ${scope} ${alert.period}: $${alert.currentSpend.toFixed(2)} / $${alert.critAt.toFixed(2)} (${Math.round(alert.percentUsed)}%)`,
+        );
+      }
       lines.push('');
     }
   }

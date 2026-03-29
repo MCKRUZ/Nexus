@@ -55,7 +55,21 @@ import {
   deleteNote,
   type UpsertNoteParams,
 } from './repositories/note.js';
-import type { Project, Decision, Pattern, Preference, Conflict, Note, AuditEntry, ConflictTier, ConflictSeverity, ImpactResult } from './types/index.js';
+import {
+  upsertBudgetConfig,
+  getBudgetConfigs,
+  getGlobalBudgetConfigs,
+  getBudgetConfigById,
+  deleteBudgetConfig,
+  silenceBudget as silenceBudgetRepo,
+  unsilenceBudget as unsilenceBudgetRepo,
+  evaluateBudget,
+  getBudgetEvents,
+  computePeriodStart,
+  type UpsertBudgetParams,
+} from './repositories/budget.js';
+import { computeTokenAnalytics, computeSpendForPeriod } from './native/token-analytics.js';
+import type { Project, Decision, Pattern, Preference, Conflict, Note, AuditEntry, ConflictTier, ConflictSeverity, ImpactResult, BudgetConfig, BudgetEvent, BudgetCheckResult } from './types/index.js';
 import type { DecisionKind } from './types/index.js';
 import { runDoctor, type DoctorReport } from './diagnostics/doctor.js';
 import { emitPipelineEvent, getPipelineStats, getLlmCosts, type PipelineEvent, type PipelineStats, type LlmCostSummary } from './diagnostics/pipeline.js';
@@ -69,6 +83,7 @@ import fs from 'node:fs';
 export type { AuditQueryOptions, AuditCountByDay, AuditCountByOperation };
 
 export type { UpsertNoteParams };
+export type { UpsertBudgetParams };
 export type { DeduplicateResult };
 export type { PatternDeduplicateResult };
 
@@ -386,7 +401,7 @@ export class NexusService {
     return runDoctor(this.db);
   }
 
-  syncProject(projectId: string): boolean {
+  syncProject(projectId: string, budgetAlerts?: BudgetCheckResult[]): boolean {
     const project = findProjectById(this.db, projectId);
     if (!project) return false;
     if (!fs.existsSync(project.path)) return false;
@@ -428,6 +443,7 @@ export class NexusService {
         decisions,
         conflicts: conflicts as Conflict[],
         relatedProjectNotes,
+        budgetAlerts,
       });
       if (result.updated) {
         emitPipelineEvent(this.db, project.id, 'pipeline.sync.success');
@@ -457,6 +473,104 @@ export class NexusService {
     metadata?: Record<string, string>,
   ): void {
     emitPipelineEvent(this.db, projectId, operation, metadata);
+  }
+
+  // ─── Budget Alerts ───────────────────────────────────────────────────────
+
+  setBudget(
+    params: UpsertBudgetParams,
+    source: 'cli' | 'mcp' | 'daemon' = 'mcp',
+  ): BudgetConfig {
+    return upsertBudgetConfig(this.db, params, source);
+  }
+
+  getBudgets(projectId?: string): BudgetConfig[] {
+    return getBudgetConfigs(this.db, projectId);
+  }
+
+  getAllBudgets(): BudgetConfig[] {
+    return getBudgetConfigs(this.db);
+  }
+
+  getGlobalBudgets(): BudgetConfig[] {
+    return getGlobalBudgetConfigs(this.db);
+  }
+
+  getBudgetById(id: string): BudgetConfig | undefined {
+    return getBudgetConfigById(this.db, id);
+  }
+
+  deleteBudget(id: string, source: 'cli' | 'mcp' | 'daemon' = 'mcp'): boolean {
+    return deleteBudgetConfig(this.db, id, source);
+  }
+
+  silenceBudget(
+    configId: string,
+    durationMs: number,
+    source: 'cli' | 'mcp' | 'daemon' = 'mcp',
+  ): boolean {
+    return silenceBudgetRepo(this.db, configId, Date.now() + durationMs, source);
+  }
+
+  unsilenceBudget(
+    configId: string,
+    source: 'cli' | 'mcp' | 'daemon' = 'mcp',
+  ): boolean {
+    return unsilenceBudgetRepo(this.db, configId, source);
+  }
+
+  async checkBudgets(claudeDir?: string): Promise<BudgetCheckResult[]> {
+    const resolvedDir = claudeDir ?? (await this.resolveClaudeDir());
+    const configs = getBudgetConfigs(this.db);
+    const enabledConfigs = configs.filter((c) => c.enabled);
+    if (enabledConfigs.length === 0) return [];
+
+    const analytics = await computeTokenAnalytics(resolvedDir, { sinceDays: 31 });
+    const results: BudgetCheckResult[] = [];
+
+    for (const config of enabledConfigs) {
+      const periodStartDate = new Date(computePeriodStart(config.period)).toISOString().slice(0, 10);
+
+      let projectCwd: string | undefined;
+      let projectName: string | undefined;
+      if (config.projectId) {
+        const project = findProjectById(this.db, config.projectId);
+        if (!project) continue;
+        projectCwd = project.path;
+        projectName = project.name;
+      }
+
+      const currentSpend = computeSpendForPeriod(analytics, periodStartDate, projectCwd);
+      const { state, event } = evaluateBudget(this.db, config, currentSpend);
+      const silenced = config.silencedUntil != null && config.silencedUntil > Date.now();
+
+      results.push({
+        configId: config.id,
+        configName: config.name,
+        ...(config.projectId ? { projectId: config.projectId } : {}),
+        ...(projectName ? { projectName } : {}),
+        period: config.period,
+        status: state.status,
+        currentSpend,
+        warnAt: config.warnAt,
+        critAt: config.critAt,
+        percentUsed: config.critAt > 0 ? (currentSpend / config.critAt) * 100 : 0,
+        silenced,
+        ...(event ? { transition: { from: event.previousStatus, to: event.newStatus } } : {}),
+      });
+    }
+
+    return results;
+  }
+
+  getBudgetHistory(configId?: string, limit?: number): BudgetEvent[] {
+    return getBudgetEvents(this.db, configId, limit);
+  }
+
+  private async resolveClaudeDir(): Promise<string> {
+    const { homedir } = await import('node:os');
+    const { join } = await import('node:path');
+    return join(homedir(), '.claude');
   }
 
   // ─── Path normalization migration ─────────────────────────────────────────
@@ -497,4 +611,5 @@ export class NexusService {
     traverse(rootProjectId, depth);
     return edges;
   }
+
 }

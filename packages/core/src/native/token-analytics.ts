@@ -54,6 +54,8 @@ export interface TokenAnalytics {
     requestCount: number;
   }>;
   topSessions: SessionTokenUsage[];
+  /** All session usages (not just top 15). Used by budget alerts for accurate per-project period spend. */
+  allSessions: SessionTokenUsage[];
   cacheSavingsUsd: number;
   efficiency: EfficiencyMetrics;
 }
@@ -513,7 +515,36 @@ export async function computeTokenAnalytics(
     byDay,
     byProject,
     topSessions,
+    allSessions: sessionUsages,
     cacheSavingsUsd: totalCacheSavings,
     efficiency,
   };
+}
+
+// ─── Budget spend helper ──────────────────────────────────────────────────
+
+/**
+ * Compute total USD spend for a given budget period and optional project cwd.
+ * Uses pre-computed TokenAnalytics to avoid re-scanning session files.
+ */
+export function computeSpendForPeriod(
+  analytics: TokenAnalytics,
+  periodStartDate: string, // ISO date string like '2026-03-01'
+  projectCwd?: string,
+): number {
+  if (projectCwd) {
+    // Per-project: sum ALL sessions matching cwd within the period
+    const normalizedCwd = projectCwd.replace(/\\/g, '/');
+    return analytics.allSessions
+      .filter((s) => {
+        const sCwd = s.cwd.replace(/\\/g, '/');
+        return sCwd === normalizedCwd && s.startedAt.slice(0, 10) >= periodStartDate;
+      })
+      .reduce((sum, s) => sum + s.totalEstimatedCostUsd, 0);
+  }
+
+  // Global: sum byDay for days in period
+  return analytics.byDay
+    .filter((d) => d.date >= periodStartDate)
+    .reduce((sum, d) => sum + d.estimatedCostUsd, 0);
 }

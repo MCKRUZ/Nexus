@@ -1424,6 +1424,65 @@ app.get('/api/claude-config/file', (c) => {
   return c.json({ path: resolved, content });
 });
 
+// ─── Budget Alerts ──────────────────────────────────────────────────────────
+
+app.get('/api/budget', (c) => {
+  const projectId = c.req.query('projectId');
+  const configs = withSvc((svc) => projectId ? svc.getBudgets(projectId) : svc.getAllBudgets());
+  return c.json(configs);
+});
+
+app.get('/api/budget/status', async (c) => {
+  const svc = NexusService.open();
+  try {
+    const results = await svc.checkBudgets();
+    return c.json(results);
+  } finally {
+    svc.close();
+  }
+});
+
+app.post('/api/budget', async (c) => {
+  const body = await c.req.json<{
+    projectId?: string;
+    name: string;
+    period: 'daily' | 'weekly' | 'monthly';
+    warnAt: number;
+    critAt: number;
+  }>();
+  const config = withSvc((svc) => svc.setBudget(body, 'daemon'));
+  return c.json(config, 201);
+});
+
+app.delete('/api/budget/:id', (c) => {
+  const id = c.req.param('id');
+  const deleted = withSvc((svc) => svc.deleteBudget(id, 'daemon'));
+  if (!deleted) return c.json({ error: 'Not found' }, 404);
+  return c.json({ deleted: true });
+});
+
+app.post('/api/budget/:id/silence', async (c) => {
+  const id = c.req.param('id');
+  const { durationMs } = await c.req.json<{ durationMs: number }>();
+  const silenced = withSvc((svc) => svc.silenceBudget(id, durationMs, 'daemon'));
+  if (!silenced) return c.json({ error: 'Not found' }, 404);
+  return c.json({ silenced: true });
+});
+
+app.post('/api/budget/:id/unsilence', (c) => {
+  const id = c.req.param('id');
+  const result = withSvc((svc) => svc.unsilenceBudget(id, 'daemon'));
+  if (!result) return c.json({ error: 'Not found' }, 404);
+  return c.json({ unsilenced: true });
+});
+
+app.get('/api/budget/history', (c) => {
+  const configId = c.req.query('configId');
+  const limit = parseInt(c.req.query('limit') ?? '50', 10);
+  const events = withSvc((svc) => svc.getBudgetHistory(configId, limit));
+  return c.json(events);
+});
+
 // ─── API 404 guard — return JSON for any unmatched /api/* route ───────────────
 app.all('/api/*', (c) => c.json({ error: 'Not found' }, 404));
 

@@ -202,6 +202,50 @@ const MIGRATIONS: Array<{ version: number; up: string }> = [
       ALTER TABLE conflicts ADD COLUMN severity TEXT NOT NULL DEFAULT 'medium' CHECK(severity IN ('critical', 'high', 'medium', 'low', 'info'));
     `,
   },
+  {
+    version: 5,
+    up: `
+      CREATE TABLE IF NOT EXISTS budget_configs (
+        id             TEXT PRIMARY KEY,
+        project_id     TEXT REFERENCES projects(id) ON DELETE CASCADE,
+        name           TEXT NOT NULL,
+        period         TEXT NOT NULL CHECK(period IN ('daily', 'weekly', 'monthly')),
+        warn_at        REAL NOT NULL,
+        crit_at        REAL NOT NULL,
+        warn_clear     REAL NOT NULL,
+        crit_clear     REAL NOT NULL,
+        enabled        INTEGER NOT NULL DEFAULT 1,
+        silenced_until INTEGER,
+        created_at     INTEGER NOT NULL,
+        updated_at     INTEGER NOT NULL,
+        UNIQUE(project_id, name)
+      );
+      CREATE INDEX IF NOT EXISTS idx_budget_configs_project ON budget_configs(project_id);
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_budget_configs_global_name
+        ON budget_configs(name) WHERE project_id IS NULL;
+
+      CREATE TABLE IF NOT EXISTS budget_state (
+        config_id         TEXT PRIMARY KEY REFERENCES budget_configs(id) ON DELETE CASCADE,
+        status            TEXT NOT NULL DEFAULT 'clear' CHECK(status IN ('clear', 'warning', 'critical')),
+        current_spend     REAL NOT NULL DEFAULT 0,
+        period_start      INTEGER NOT NULL,
+        last_evaluated_at INTEGER NOT NULL,
+        last_transition_at INTEGER
+      );
+
+      CREATE TABLE IF NOT EXISTS budget_events (
+        id              TEXT PRIMARY KEY,
+        config_id       TEXT NOT NULL REFERENCES budget_configs(id) ON DELETE CASCADE,
+        previous_status TEXT NOT NULL CHECK(previous_status IN ('clear', 'warning', 'critical')),
+        new_status      TEXT NOT NULL CHECK(new_status IN ('clear', 'warning', 'critical')),
+        spend           REAL NOT NULL,
+        threshold       REAL NOT NULL,
+        at              INTEGER NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_budget_events_config ON budget_events(config_id);
+      CREATE INDEX IF NOT EXISTS idx_budget_events_at ON budget_events(at);
+    `,
+  },
 ];
 
 export function migrateDatabase(db: NexusDb): void {
