@@ -16,7 +16,7 @@ const app = new Hono();
 app.use(
   '*',
   cors({
-    origin: ['http://localhost:5173', 'http://localhost:4173', 'http://tauri.localhost'],
+    origin: ['http://localhost:5173', 'http://localhost:4173', 'http://tauri.localhost', 'https://tauri.localhost'],
     allowMethods: ['GET', 'POST', 'DELETE', 'OPTIONS'],
     allowHeaders: ['Content-Type'],
   }),
@@ -1052,10 +1052,10 @@ app.get('/api/langfuse/status', async (c) => {
   const lf = getLangfuseConfig();
   if (!lf) return c.json({ configured: false, reachable: false });
 
-  // Quick reachability check (3s timeout)
+  // Reachability check (8s timeout — Synology NAS may need wake-up time)
   try {
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 3_000);
+    const timeout = setTimeout(() => controller.abort(), 8_000);
     const res = await fetch(`${lf.baseUrl}/api/public/health`, {
       headers: { Authorization: lf.authHeader },
       signal: controller.signal,
@@ -1068,6 +1068,28 @@ app.get('/api/langfuse/status', async (c) => {
 });
 
 // Generic read-only proxy: /api/langfuse/* → {langfuseBase}/api/public/*
+// Retries once on abort/timeout — Synology NAS may need wake-up time.
+async function fetchLangfuse(url: string, authHeader: string, timeoutMs = 10_000): Promise<Response> {
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      const res = await fetch(url, {
+        headers: { Authorization: authHeader },
+        signal: controller.signal,
+      });
+      clearTimeout(timer);
+      return res;
+    } catch (err) {
+      clearTimeout(timer);
+      if (attempt === 1) throw err;
+      // First attempt failed — brief pause then retry
+      await new Promise(r => setTimeout(r, 500));
+    }
+  }
+  throw new Error('Langfuse fetch failed after retries');
+}
+
 app.get('/api/langfuse/*', async (c) => {
   const lf = getLangfuseConfig();
   if (!lf) return c.json({ error: 'Langfuse not configured' }, 503);
@@ -1077,14 +1099,7 @@ app.get('/api/langfuse/*', async (c) => {
   const lfUrl = `${lf.baseUrl}/api/public${suffix}${search}`;
 
   try {
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 5_000);
-    const res = await fetch(lfUrl, {
-      headers: { Authorization: lf.authHeader },
-      signal: controller.signal,
-    });
-    clearTimeout(timeout);
-
+    const res = await fetchLangfuse(lfUrl, lf.authHeader);
     if (!res.ok) {
       return c.json({ error: `Langfuse API error: ${res.status}` }, 502);
     }

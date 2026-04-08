@@ -2,7 +2,7 @@
 /**
  * Nexus MCP Server — Phase 2
  *
- * All 8 nexus_* tools are wired to @nexus/core via NexusService.
+ * All 10 nexus_* tools are wired to @nexus/core via NexusService.
  * The server opens/closes the DB per request to avoid holding it open
  * across long idle periods.
  */

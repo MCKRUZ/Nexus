@@ -226,12 +226,13 @@ Available MCP tools:
 |------|-------------|
 | `nexus_query` | Full-text search across decisions, patterns, preferences, notes |
 | `nexus_decide` | Record an architectural decision |
-| `nexus_pattern` | Search code patterns |
-| `nexus_record_pattern` | Record a new code pattern |
+| `nexus_pattern` | Search or record code patterns (action: `search` \| `record`) |
 | `nexus_check_conflicts` | Detect cross-project conflicts |
-| `nexus_dependencies` | Query the project dependency graph |
-| `nexus_preferences` | Look up or set project/global preferences |
-| `nexus_note` | Get, set, list, delete, or search project notes |
+| `nexus_dependencies` | Query the cross-project dependency graph |
+| `nexus_preferences` | Get, set, or list developer preferences (global or project-scoped) |
+| `nexus_note` | Manage project notes that persist in CLAUDE.md |
+| `nexus_check_impact` | Analyze downstream impact of a proposed change across related projects |
+| `nexus_budget` | Manage spending budgets and alerts with daily/weekly/monthly cost limits |
 
 ---
 
@@ -288,13 +289,21 @@ If you run a self-hosted [Langfuse](https://langfuse.com) instance, add credenti
 |------|-------------|
 | **Overview** | Stats cards, recent decisions, active conflicts |
 | **Projects** | Project list + per-project decisions, patterns, notes, graph |
+| **Decisions** | Decision graph with cross-project relationship visualization |
 | **Patterns** | Searchable pattern library with frequency bars |
 | **Notes** | Freeform context per project; synced into CLAUDE.md |
 | **Conflicts** | Open, potential, and resolved cross-project conflicts |
 | **Preferences** | Global and per-project preference editor |
 | **Search** | Full-text search across all knowledge |
-| **Observability** | Native Claude Code sessions + optional Langfuse traces/cost charts |
-| **Claude Config** | Unified view of all Claude Code configuration — global settings, MCP servers (with hub sub-server discovery), rules, skills, agents, commands, hooks, permissions, and per-project `.claude/` contents |
+| **Analytics** | Nexus usage analytics — extraction rates, tool effectiveness, project activity |
+| **Tokens** | Token audit — CLAUDE.md budget tracking per project |
+| **Budget Alerts** | Spending budgets with daily/weekly/monthly cost limits and alerts |
+| **Observability** | LLM observability — native Claude Code sessions + optional Langfuse traces/cost charts |
+| **Sessions** | Session audit — browse all Claude Code sessions with event timelines and tool inspection |
+| **Context Explorer** | Story-driven session replay with efficiency analysis |
+| **Session Insights** | Aggregate session analytics — trends, patterns, project breakdown |
+| **Claude Config** | Unified view of all Claude Code configuration — settings, MCP servers, rules, skills, agents, hooks, permissions |
+| **Health** | System health checks — DB, MCP, hooks, extraction pipeline status |
 | **Settings** | Server bind mode, autostart on login, port display |
 
 ---
@@ -349,7 +358,7 @@ Requires Rust/Cargo. The build runs `pnpm build` (frontend) + `pnpm compile:serv
 | Phase | Description | Status |
 |-------|-------------|--------|
 | 1 | Foundation — DB, CLI, secret filter | ✅ Complete |
-| 2 | MCP Server — 8 tools | ✅ Complete |
+| 2 | MCP Server — 10 tools | ✅ Complete |
 | 3 | Hooks & LLM extraction | ✅ Complete |
 | 4 | CLAUDE.md sync engine | ✅ Complete |
 | 5 | HTTP server + React dashboard + Notes | ✅ Complete |
