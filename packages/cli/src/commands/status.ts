@@ -1,6 +1,6 @@
 import { Command } from 'commander';
 import chalk from 'chalk';
-import { isInitialized, NEXUS_DIR, DB_FILE } from '@nexus/core';
+import { isInitialized, NEXUS_DIR, DB_FILE, isPlaintextDatabase } from '@nexus/core';
 import { log } from '../lib/output.js';
 import { openService } from '../lib/service.js';
 import fs from 'node:fs';
@@ -34,7 +34,11 @@ export function statusCommand(): Command {
         console.log(chalk.bold('Nexus Status'));
         console.log(chalk.dim('─────────────'));
         log.plain(`Data dir:   ${NEXUS_DIR}`);
-        log.plain(`Database:   ${path.basename(DB_FILE)} (${dbSizeKb} KB, encrypted)`);
+        // Read the file header rather than asserting a state we have not checked.
+        const encryptionLabel = isPlaintextDatabase(DB_FILE)
+          ? chalk.red('UNENCRYPTED — run `nexus db encrypt`')
+          : 'encrypted';
+        log.plain(`Database:   ${path.basename(DB_FILE)} (${dbSizeKb} KB, ${encryptionLabel})`);
         console.log('');
         console.log(chalk.bold('Statistics'));
         console.log(chalk.dim('──────────'));

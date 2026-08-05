@@ -7,8 +7,8 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
-import type { NexusDb } from '../db/connection.js';
-import { CONFIG_FILE, isInitialized } from '../config/index.js';
+import { isPlaintextDatabase, type NexusDb } from '../db/connection.js';
+import { CONFIG_FILE, DB_FILE, isInitialized } from '../config/index.js';
 import { getPipelineStats } from './pipeline.js';
 
 // ─── Types ──────────────────────────────────────────────────────────────────
@@ -65,20 +65,38 @@ interface RelatedRow {
 
 function checkDbAccessible(db: NexusDb): DoctorCheck {
   try {
-    // If key pragma failed, any query would throw
     const row = db.prepare('SELECT count(*) AS cnt FROM projects').get() as CountRow;
     return {
-      name: 'Database accessible & encrypted',
+      name: 'Database accessible',
       status: 'pass',
-      message: `SQLCipher OK, ${row.cnt} project(s) in DB`,
+      message: `${row.cnt} project(s) in DB`,
     };
   } catch (err) {
     return {
-      name: 'Database accessible & encrypted',
+      name: 'Database accessible',
       status: 'fail',
       message: err instanceof Error ? err.message : 'DB query failed',
     };
   }
+}
+
+/**
+ * A successful query proves the database is readable, not that it is encrypted —
+ * a driver without encryption support ignores `PRAGMA key` and reads plaintext
+ * perfectly happily. Only the file header settles it.
+ */
+function checkDbEncrypted(): DoctorCheck {
+  if (!fs.existsSync(DB_FILE)) {
+    return { name: 'Database encrypted', status: 'fail', message: 'No database file found' };
+  }
+  if (isPlaintextDatabase(DB_FILE)) {
+    return {
+      name: 'Database encrypted',
+      status: 'fail',
+      message: 'Database is PLAINTEXT — run `nexus db encrypt`',
+    };
+  }
+  return { name: 'Database encrypted', status: 'pass', message: 'File header is encrypted' };
 }
 
 function checkConfigExists(): DoctorCheck {
@@ -244,6 +262,7 @@ function computeProjectHealth(db: NexusDb, project: ProjectRow): ProjectHealth {
 export function runDoctor(db: NexusDb): DoctorReport {
   const checks: DoctorCheck[] = [
     checkDbAccessible(db),
+    checkDbEncrypted(),
     checkConfigExists(),
     checkProjectsRegistered(db),
     checkHookInstalled(),

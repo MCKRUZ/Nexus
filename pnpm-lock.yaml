@@ -67,8 +67,8 @@ importers:
         specifier: ^0.78.0
         version: 0.78.0(zod@3.25.76)
       better-sqlite3:
-        specifier: ^11.0.0
-        version: 11.10.0
+        specifier: npm:better-sqlite3-multiple-ciphers@^12.11.1
+        version: better-sqlite3-multiple-ciphers@12.11.1
       zod:
         specifier: ^3.23.0
         version: 3.25.76
@@ -175,8 +175,8 @@ importers:
         specifier: workspace:*
         version: link:../core
       better-sqlite3:
-        specifier: ^11.0.0
-        version: 11.10.0
+        specifier: npm:better-sqlite3-multiple-ciphers@^12.11.1
+        version: better-sqlite3-multiple-ciphers@12.11.1
       hono:
         specifier: ^4.6.0
         version: 4.12.3
@@ -1201,8 +1201,9 @@ packages:
     engines: {node: '>=6.0.0'}
     hasBin: true
 
-  better-sqlite3@11.10.0:
-    resolution: {integrity: sha512-EwhOpyXiOEL/lKzHz9AW1msWFNzGc/z+LzeB3/jnFJpxu+th2yqvzsSWas1v9jgs9+xiXJcD5A8CJxAG2TaghQ==}
+  better-sqlite3-multiple-ciphers@12.11.1:
+    resolution: {integrity: sha512-pG72+3VkUipnmYx4LwQqoOXNG2CJ1HlmDrlvqgr7xQHgsE+cz5rAZEiaJHnUKTHaGfGifggA/C0Sv9qZlUrfow==}
+    engines: {node: 20.x || 22.x || 23.x || 24.x || 25.x || 26.x}
 
   bindings@1.5.0:
     resolution: {integrity: sha512-p2q/t/mhvuOj/UeLlV6566GD/guowlr0hHxClI0W9m7MWYkL1F0hLo+0Aexs9HSPCtR1SXQ0TD3MMKrXZajbiQ==}
@@ -3488,7 +3489,7 @@ snapshots:
 
   baseline-browser-mapping@2.10.0: {}
 
-  better-sqlite3@11.10.0:
+  better-sqlite3-multiple-ciphers@12.11.1:
     dependencies:
       bindings: 1.5.0
       prebuild-install: 7.1.3

@@ -12,7 +12,7 @@ paths: packages/core/**
 
 ## Security Must-Haves
 - `filterSecrets()` before every DB write that involves user content
-- SQLCipher key pragma MUST be first pragma after opening DB
+- Encryption is verified, not assumed: openDatabase() sets `PRAGMA cipher` then `PRAGMA key`, then proves the key decrypts. It refuses to open a plaintext file.
 - Never expose raw DB handle outside this package — wrap in typed functions
 
 ## Exports

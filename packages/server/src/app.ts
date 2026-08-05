@@ -1,7 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
-// @ts-expect-error — better-sqlite3 types are in @nexus/core, not this package
 import Database from 'better-sqlite3';
 import { Hono } from 'hono';
 import { cors } from 'hono/cors';

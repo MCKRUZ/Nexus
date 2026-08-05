@@ -12,6 +12,7 @@ import { installMemoryRuleCommand } from './commands/install-memory-rule.js';
 import { doctorCommand } from './commands/doctor.js';
 import { backfillCommand } from './commands/backfill.js';
 import { patternCommand } from './commands/pattern.js';
+import { dbCommand } from './commands/db.js';
 
 const program = new Command();
 
@@ -32,6 +33,7 @@ program.addCommand(installMemoryRuleCommand());
 program.addCommand(doctorCommand());
 program.addCommand(backfillCommand());
 program.addCommand(patternCommand());
+program.addCommand(dbCommand());
 
 program.parseAsync(process.argv).catch((err: unknown) => {
   console.error(err instanceof Error ? err.message : err);
