@@ -41,7 +41,7 @@ import {
   isSimilarDecision,
   isSimilarPattern,
 } from '@nexus/core';
-import type { Conflict, LlmUsageInfo } from '@nexus/core';
+import type { BudgetCheckResult, Conflict, LlmUsageInfo } from '@nexus/core';
 
 /** Rough cost per 1M tokens by provider. Used for audit_log metadata only. */
 const COST_PER_M_INPUT: Record<string, number> = {
@@ -226,28 +226,13 @@ export function hookCommand(): Command {
             // Never block session teardown
           }
 
-          // 3. Sync CLAUDE.md so notes/decisions are ready for the next session
+          // 3. Budget check — evaluate and log state transitions.
+          // Runs BEFORE the sync so any active alert rides along in a single
+          // CLAUDE.md write instead of triggering a second one.
+          let budgetResults: BudgetCheckResult[] = [];
           try {
             if (!opts.dryRun) {
-              svc.emitPipelineEvent(project.id, 'pipeline.sync.start');
-              const syncUpdated = svc.syncProject(project.id);
-              if (syncUpdated) {
-                output(`CLAUDE.md synced: ${project.name}`);
-              }
-            }
-          } catch (syncErr) {
-            if (!opts.dryRun) {
-              svc.emitPipelineEvent(project.id, 'pipeline.sync.fail', {
-                error: syncErr instanceof Error ? syncErr.message : 'Unknown error',
-              });
-            }
-            // Sync is best-effort — never block session teardown
-          }
-
-          // 3.5. Budget check — evaluate and log state transitions
-          try {
-            if (!opts.dryRun) {
-              const budgetResults = await svc.checkBudgets();
+              budgetResults = await svc.checkBudgets();
               for (const result of budgetResults) {
                 if (result.transition) {
                   const msg = `Budget "${result.configName}": ${result.transition.from} -> ${result.transition.to} ($${result.currentSpend.toFixed(2)})`;
@@ -260,15 +245,30 @@ export function hookCommand(): Command {
                   }
                 }
               }
-
-              // Re-sync CLAUDE.md with budget alerts if any are active
-              const hasActiveAlerts = budgetResults.some((r) => r.status !== 'clear' && !r.silenced);
-              if (hasActiveAlerts) {
-                svc.syncProject(project.id, budgetResults);
-              }
             }
           } catch {
             // Budget check is best-effort — never block session teardown
+          }
+
+          // 4. Sync CLAUDE.md once so notes/decisions are ready for the next session
+          try {
+            if (!opts.dryRun) {
+              svc.emitPipelineEvent(project.id, 'pipeline.sync.start');
+              const hasActiveAlerts = budgetResults.some((r) => r.status !== 'clear' && !r.silenced);
+              const syncUpdated = hasActiveAlerts
+                ? svc.syncProject(project.id, budgetResults)
+                : svc.syncProject(project.id);
+              if (syncUpdated) {
+                output(`CLAUDE.md synced: ${project.name}`);
+              }
+            }
+          } catch (syncErr) {
+            if (!opts.dryRun) {
+              svc.emitPipelineEvent(project.id, 'pipeline.sync.fail', {
+                error: syncErr instanceof Error ? syncErr.message : 'Unknown error',
+              });
+            }
+            // Sync is best-effort — never block session teardown
           }
 
           // 4. Portfolio-level conflict & advisory detection (single LLM call)

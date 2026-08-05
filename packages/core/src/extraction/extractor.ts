@@ -13,19 +13,21 @@ import { filterSecrets } from '../security/index.js';
 import { readConfig } from '../config/index.js';
 import { createProvider } from '../llm/index.js';
 import { smartTruncate } from '../utils/truncate.js';
+import { z } from 'zod';
+import { DecisionKindSchema } from '../types/index.js';
 import type { DecisionKind } from '../types/index.js';
 
 export interface ExtractedDecision {
   kind: DecisionKind;
   summary: string;
-  rationale?: string;
+  rationale?: string | undefined;
   confidence: 'high' | 'medium' | 'low';
 }
 
 export interface ExtractedPattern {
   name: string;
   description: string;
-  examplePath?: string;
+  examplePath?: string | undefined;
 }
 
 export interface ExtractedPreference {
@@ -46,6 +48,80 @@ export interface ExtractionResult {
   preferences: ExtractedPreference[];
   rawResponse?: string;
   llmUsage?: LlmUsageInfo;
+  /** Items the LLM returned that failed validation and were discarded. */
+  droppedCount?: number;
+}
+
+/**
+ * The LLM is an untrusted boundary: its response is JSON of whatever shape it
+ * felt like emitting. Validate here so downstream repositories can trust their
+ * inputs — an item missing a required field previously reached filterSecrets()
+ * as `undefined` and threw inside the Stop hook.
+ */
+const ExtractedDecisionSchema = z.object({
+  kind: DecisionKindSchema,
+  summary: z.string().trim().min(1),
+  rationale: z.string().trim().min(1).optional(),
+  confidence: z.enum(['high', 'medium', 'low']).default('medium'),
+});
+
+const ExtractedPatternSchema = z.object({
+  name: z.string().trim().min(1),
+  description: z.string().trim().min(1),
+  examplePath: z.string().trim().min(1).optional(),
+});
+
+const ExtractedPreferenceSchema = z.object({
+  key: z.string().trim().min(1),
+  value: z.string().trim().min(1),
+});
+
+/** Validate one array of LLM-supplied items, discarding those that don't conform. */
+function validateItems<S extends z.ZodTypeAny>(
+  raw: unknown,
+  schema: S,
+): { items: z.infer<S>[]; dropped: number } {
+  if (!Array.isArray(raw)) return { items: [], dropped: 0 };
+  const items: z.infer<S>[] = [];
+  let dropped = 0;
+  for (const candidate of raw) {
+    const result = schema.safeParse(candidate);
+    if (result.success) items.push(result.data);
+    else dropped++;
+  }
+  return { items, dropped };
+}
+
+/**
+ * Parse an LLM extraction response into a validated result.
+ * Never throws — a malformed response yields an empty result.
+ */
+export function parseExtractionResponse(rawResponse: string): ExtractionResult & { droppedCount: number } {
+  const empty = { decisions: [], patterns: [], preferences: [], rawResponse, droppedCount: 0 };
+
+  const jsonMatch = rawResponse.match(/\{[\s\S]*\}/);
+  if (!jsonMatch) return empty;
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(jsonMatch[0]);
+  } catch {
+    return empty;
+  }
+  if (typeof parsed !== 'object' || parsed === null) return empty;
+
+  const obj = parsed as Record<string, unknown>;
+  const decisions = validateItems(obj['decisions'], ExtractedDecisionSchema);
+  const patterns = validateItems(obj['patterns'], ExtractedPatternSchema);
+  const preferences = validateItems(obj['preferences'], ExtractedPreferenceSchema);
+
+  return {
+    decisions: decisions.items,
+    patterns: patterns.items,
+    preferences: preferences.items,
+    rawResponse,
+    droppedCount: decisions.dropped + patterns.dropped + preferences.dropped,
+  };
 }
 
 const EXTRACTION_SYSTEM_PROMPT = `You are an architectural knowledge extractor for a developer intelligence system.
@@ -115,24 +191,13 @@ export async function extractFromTranscript(
     outputTokens: result.usage?.outputTokens,
   };
 
-  try {
-    // Extract JSON from response (it might be wrapped in markdown)
-    const jsonMatch = rawResponse.match(/\{[\s\S]*\}/);
-    if (!jsonMatch) {
-      return { decisions: [], patterns: [], preferences: [], rawResponse, llmUsage };
-    }
-
-    const parsed = JSON.parse(jsonMatch[0]) as ExtractionResult;
-    return {
-      decisions: parsed.decisions ?? [],
-      patterns: parsed.patterns ?? [],
-      preferences: parsed.preferences ?? [],
-      rawResponse,
-      llmUsage,
-    };
-  } catch {
-    return { decisions: [], patterns: [], preferences: [], rawResponse, llmUsage };
+  const parsed = parseExtractionResponse(rawResponse);
+  if (parsed.droppedCount > 0) {
+    console.warn(
+      `[nexus-extractor] Discarded ${parsed.droppedCount} malformed item(s) from LLM extraction response`,
+    );
   }
+  return { ...parsed, llmUsage };
 }
 
 export interface ExtractFromFilesOptions {

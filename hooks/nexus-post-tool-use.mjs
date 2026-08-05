@@ -8,6 +8,7 @@
  * Reads JSON from stdin: { tool_name, tool_input, tool_output, is_error, session_id }
  * Target: <10ms per invocation. No network, no LLM, no Nexus DB.
  *
+ * Uses Node 22 built-in node:sqlite — zero external dependencies.
  * Install: nexus hook install-session-tracking
  * DB location: ~/.claude/nexus-session.db (plain SQLite, no encryption)
  */
@@ -15,9 +16,17 @@
 import { createHash } from 'node:crypto';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
-import { createRequire } from 'node:module';
+import { DatabaseSync } from 'node:sqlite';
 
-const require = createRequire(import.meta.url);
+// Optional gate. The harness may install a shared hook-profile module so the user
+// can disable hooks by profile. Nexus does not own that file, so its absence must
+// not stop the hook from running.
+try {
+  const { shouldSkip } = await import('./hook-profile.mjs');
+  if (shouldSkip('nexus-post-tool-use', 'standard')) process.exit(0);
+} catch {
+  // No profile gate installed — proceed.
+}
 
 const DB_PATH = join(homedir(), '.claude', 'nexus-session.db');
 const MAX_EVENTS_PER_SESSION = 500;
@@ -51,6 +60,10 @@ CREATE TABLE IF NOT EXISTS session_meta (
 `;
 
 // ─── Inline classifier (no Nexus dep) ───────────────────────────────────────
+//
+// Only categories the snapshot builder renders are captured: file, task, error,
+// git, subagent, tool. `cd` churn was 57% of all rows written and was never read
+// back, so it is no longer recorded.
 
 function classifyToolEvent(toolName, toolInput, toolOutput, isError) {
   const events = [];
@@ -75,9 +88,6 @@ function classifyToolEvent(toolName, toolInput, toolOutput, isError) {
     if (/\bgit\b/.test(cmd)) {
       const sub = cmd.match(/git\s+(\S+)/)?.[1] ?? 'unknown';
       events.push(mk('git', 'git', 2, trunc(`git ${sub}`), 'Bash'));
-    } else if (/^\s*cd\b/.test(cmd)) {
-      const dir = cmd.replace(/^\s*cd\s+/, '').replace(/["']/g, '');
-      events.push(mk('env', 'env', 2, trunc(`cwd: ${dir}`), 'Bash'));
     }
     if (isError) {
       events.push(mk('error', 'error', 2, trunc(toolOutput.slice(0, 300)), 'Bash'));
@@ -92,7 +102,9 @@ function classifyToolEvent(toolName, toolInput, toolOutput, isError) {
     events.push(mk('error', 'error', 2, trunc(toolOutput.slice(0, 300)), toolName));
   }
 
-  return events;
+  // An event with no data teaches nothing on recovery — drop it rather than
+  // storing an empty row.
+  return events.filter((e) => e.data.length > 0);
 }
 
 function mk(type, category, priority, data, source) {
@@ -127,30 +139,22 @@ async function main() {
 
   if (classified.length === 0) process.exit(0);
 
-  let Database;
-  try {
-    Database = require('better-sqlite3');
-  } catch {
-    // better-sqlite3 not available — silently exit
-    process.exit(0);
-  }
-
   let db;
   try {
-    db = new Database(DB_PATH);
-    db.pragma('journal_mode = WAL');
-    db.pragma('busy_timeout = 1000');
+    db = new DatabaseSync(DB_PATH);
+    db.exec('PRAGMA journal_mode = WAL');
+    db.exec('PRAGMA busy_timeout = 1000');
 
     // Create tables if needed
     db.exec(SCHEMA);
 
     const insertStmt = db.prepare(
-      `INSERT INTO session_events (session_id, type, category, priority, data, data_hash, source)
-       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO session_events (session_id, type, category, priority, data, data_hash, source, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
     );
 
     const hashCheckStmt = db.prepare(
-      `SELECT 1 FROM session_events WHERE session_id = ? AND data_hash = ? ORDER BY id DESC LIMIT 5`,
+      `SELECT 1 FROM session_events WHERE session_id = ? AND data_hash = ? LIMIT 1`,
     );
 
     const upsertMeta = db.prepare(
@@ -163,21 +167,27 @@ async function main() {
 
     const now = Date.now();
 
-    db.transaction(() => {
+    // One transaction so the event rows and the meta counter stay consistent.
+    db.exec('BEGIN');
+    try {
       for (const evt of classified) {
         const hash = createHash('sha256')
           .update(`${evt.type}:${evt.data}`)
           .digest('hex')
           .slice(0, 16);
 
-        // Dedup: skip if same hash in last 5 events
+        // Dedup: skip if same hash exists for this session
         const exists = hashCheckStmt.get(session_id, hash);
         if (exists) continue;
 
-        insertStmt.run(session_id, evt.type, evt.category, evt.priority, evt.data, hash, evt.source);
+        insertStmt.run(session_id, evt.type, evt.category, evt.priority, evt.data, hash, evt.source, now);
       }
       upsertMeta.run(session_id, now);
-    })();
+      db.exec('COMMIT');
+    } catch (err) {
+      db.exec('ROLLBACK');
+      throw err;
+    }
 
     // FIFO eviction
     const countRow = db.prepare(
@@ -189,7 +199,7 @@ async function main() {
         `DELETE FROM session_events WHERE id IN (
            SELECT id FROM session_events WHERE session_id = ?
            ORDER BY id ASC LIMIT ?
-         )`,
+         )`
       ).run(session_id, excess);
     }
   } catch {

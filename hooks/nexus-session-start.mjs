@@ -7,18 +7,52 @@
  * 2. compact: Build a session snapshot from events and write to stdout
  *    so Claude can recover context after compaction
  *
+ * Uses Node 22 built-in node:sqlite — zero external dependencies.
  * Reads JSON from stdin: { session_id, type: 'startup'|'compact'|'resume', cwd }
  * DB location: ~/.claude/nexus-session.db
  */
 
 import { join } from 'node:path';
 import { homedir } from 'node:os';
-import { createRequire } from 'node:module';
+import { DatabaseSync } from 'node:sqlite';
 
-const require = createRequire(import.meta.url);
+// Optional gate. The harness may install a shared hook-profile module so the user
+// can disable hooks by profile. Nexus does not own that file, so its absence must
+// not stop the hook from running.
+try {
+  const { shouldSkip } = await import('./hook-profile.mjs');
+  if (shouldSkip('nexus-session-start', 'standard')) process.exit(0);
+} catch {
+  // No profile gate installed — proceed.
+}
 
 const DB_PATH = join(homedir(), '.claude', 'nexus-session.db');
 const SESSION_TTL_MS = 24 * 60 * 60 * 1000; // 24 hours
+
+// ─── Schema (same as post-tool-use hook) ────────────────────────────────────
+
+const SCHEMA = `
+CREATE TABLE IF NOT EXISTS session_events (
+  id         INTEGER PRIMARY KEY AUTOINCREMENT,
+  session_id TEXT NOT NULL,
+  type       TEXT NOT NULL,
+  category   TEXT NOT NULL,
+  priority   INTEGER NOT NULL,
+  data       TEXT NOT NULL,
+  data_hash  TEXT NOT NULL,
+  source     TEXT NOT NULL,
+  created_at INTEGER NOT NULL DEFAULT (CAST(strftime('%s','now') AS INTEGER) * 1000)
+);
+CREATE INDEX IF NOT EXISTS idx_se_session ON session_events(session_id);
+CREATE TABLE IF NOT EXISTS session_meta (
+  session_id   TEXT PRIMARY KEY,
+  project_dir  TEXT,
+  started_at   INTEGER,
+  last_event   INTEGER,
+  event_count  INTEGER DEFAULT 0,
+  compact_count INTEGER DEFAULT 0
+);
+`;
 
 // ─── Inline snapshot builder ────────────────────────────────────────────────
 
@@ -116,42 +150,14 @@ async function main() {
   const { session_id, type, cwd } = input;
   if (!session_id) process.exit(0);
 
-  let Database;
-  try {
-    Database = require('better-sqlite3');
-  } catch {
-    process.exit(0);
-  }
-
   let db;
   try {
-    db = new Database(DB_PATH);
-    db.pragma('journal_mode = WAL');
-    db.pragma('busy_timeout = 1000');
+    db = new DatabaseSync(DB_PATH);
+    db.exec('PRAGMA journal_mode = WAL');
+    db.exec('PRAGMA busy_timeout = 1000');
 
     // Ensure schema exists
-    db.exec(`
-      CREATE TABLE IF NOT EXISTS session_events (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        session_id TEXT NOT NULL,
-        type TEXT NOT NULL,
-        category TEXT NOT NULL,
-        priority INTEGER NOT NULL,
-        data TEXT NOT NULL,
-        data_hash TEXT NOT NULL,
-        source TEXT NOT NULL,
-        created_at INTEGER NOT NULL DEFAULT (CAST(strftime('%s','now') AS INTEGER) * 1000)
-      );
-      CREATE INDEX IF NOT EXISTS idx_se_session ON session_events(session_id);
-      CREATE TABLE IF NOT EXISTS session_meta (
-        session_id TEXT PRIMARY KEY,
-        project_dir TEXT,
-        started_at INTEGER,
-        last_event INTEGER,
-        event_count INTEGER DEFAULT 0,
-        compact_count INTEGER DEFAULT 0
-      );
-    `);
+    db.exec(SCHEMA);
 
     if (type === 'compact' || type === 'resume') {
       // Build snapshot from session events
