@@ -246,6 +246,21 @@ const MIGRATIONS: Array<{ version: number; up: string }> = [
       CREATE INDEX IF NOT EXISTS idx_budget_events_at ON budget_events(at);
     `,
   },
+  {
+    // Incremental extraction. Records how far through a session's transcript the
+    // extractor has already read, so each run only processes new turns instead
+    // of re-reading the whole session on every Stop.
+    version: 6,
+    up: `
+      CREATE TABLE IF NOT EXISTS extraction_state (
+        session_key      TEXT PRIMARY KEY,
+        project_id       TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+        last_event_index INTEGER NOT NULL DEFAULT 0,
+        last_run_at      INTEGER NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_extraction_state_project ON extraction_state(project_id);
+    `,
+  },
 ];
 
 export function migrateDatabase(db: NexusDb): void {

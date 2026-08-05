@@ -68,11 +68,16 @@ import {
   computePeriodStart,
   type UpsertBudgetParams,
 } from './repositories/budget.js';
+import {
+  getExtractionWatermark,
+  setExtractionWatermark,
+  pruneExtractionState,
+} from './repositories/extraction-state.js';
 import { computeTokenAnalytics, computeSpendForPeriod } from './native/token-analytics.js';
 import type { Project, Decision, Pattern, Preference, Conflict, Note, AuditEntry, ConflictTier, ConflictSeverity, ImpactResult, BudgetConfig, BudgetEvent, BudgetCheckResult } from './types/index.js';
 import type { DecisionKind } from './types/index.js';
 import { runDoctor, type DoctorReport } from './diagnostics/doctor.js';
-import { emitPipelineEvent, getPipelineStats, getLlmCosts, type PipelineEvent, type PipelineStats, type LlmCostSummary } from './diagnostics/pipeline.js';
+import { emitPipelineEvent, getPipelineStats, getLlmCosts, getLastPortfolioRunAt, type PipelineEvent, type PipelineStats, type LlmCostSummary } from './diagnostics/pipeline.js';
 import { runDoctorFix, type DoctorFixResult } from './diagnostics/doctor-fix.js';
 import { syncClaudeMd } from './sync/claude-md-sync.js';
 import type { PortfolioEntry } from './sync/claude-md-sync.js';
@@ -467,12 +472,32 @@ export class NexusService {
     return getLlmCosts(this.db, since);
   }
 
+  /** Epoch ms of the last portfolio analysis for a project, or null if never. */
+  getLastPortfolioRunAt(projectId: string): number | null {
+    return getLastPortfolioRunAt(this.db, projectId);
+  }
+
   emitPipelineEvent(
     projectId: string | undefined,
     operation: PipelineEvent,
     metadata?: Record<string, string>,
   ): void {
     emitPipelineEvent(this.db, projectId, operation, metadata);
+  }
+
+  // ─── Incremental Extraction ──────────────────────────────────────────────
+
+  /** Index of the first transcript event not yet extracted for this session. */
+  getExtractionWatermark(sessionKey: string): number {
+    return getExtractionWatermark(this.db, sessionKey);
+  }
+
+  setExtractionWatermark(sessionKey: string, projectId: string, eventIndex: number): void {
+    setExtractionWatermark(this.db, sessionKey, projectId, eventIndex);
+  }
+
+  pruneExtractionState(maxAgeMs: number): number {
+    return pruneExtractionState(this.db, maxAgeMs);
   }
 
   // ─── Budget Alerts ───────────────────────────────────────────────────────

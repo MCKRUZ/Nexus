@@ -19,6 +19,8 @@ export type PipelineEvent =
   | 'pipeline.sync.start'
   | 'pipeline.sync.success'
   | 'pipeline.sync.fail'
+  | 'pipeline.portfolio.run'
+  | 'pipeline.portfolio.skip'
   | 'pipeline.llm.call';
 
 // ─── Emit ───────────────────────────────────────────────────────────────────
@@ -35,6 +37,24 @@ export function emitPipelineEvent(
     ...(projectId ? { projectId } : {}),
     ...(metadata ? { meta: metadata } : {}),
   });
+}
+
+/**
+ * When portfolio analysis last ran for a project, as epoch ms, or null if never.
+ *
+ * Portfolio analysis is a full-portfolio LLM call. Firing it on every Stop
+ * re-derives the same advisories from unchanged inputs, so callers use this to
+ * rate-limit it when nothing new has been recorded.
+ */
+export function getLastPortfolioRunAt(db: NexusDb, projectId: string): number | null {
+  const row = db
+    .prepare(
+      `SELECT at FROM audit_log
+        WHERE operation = 'pipeline.portfolio.run' AND project_id = ?
+        ORDER BY at DESC LIMIT 1`,
+    )
+    .get(projectId) as { at: number } | undefined;
+  return row?.at ?? null;
 }
 
 // ─── Stats ──────────────────────────────────────────────────────────────────

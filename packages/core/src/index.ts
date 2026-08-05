@@ -14,6 +14,7 @@ export * from './native/tool-usefulness.js';
 export * from './native/token-analytics.js';
 export * from './native/context-overhead.js';
 export * from './repositories/budget.js';
+export * from './repositories/extraction-state.js';
 export * from './diagnostics/index.js';
 export * from './utils/index.js';
 export * from './session/index.js';

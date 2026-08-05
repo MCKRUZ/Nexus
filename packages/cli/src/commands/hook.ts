@@ -38,10 +38,24 @@ import {
   getSessionDetail,
   sessionToTranscript,
   extractFromTranscript,
+  planIncrementalExtraction,
   isSimilarDecision,
   isSimilarPattern,
 } from '@nexus/core';
-import type { Conflict, LlmUsageInfo } from '@nexus/core';
+import type { BudgetCheckResult, Conflict, LlmUsageInfo } from '@nexus/core';
+
+/**
+ * How long to keep per-session extraction watermarks. Claude Code never revisits
+ * a closed transcript, so anything older is dead weight.
+ */
+const EXTRACTION_STATE_TTL_MS = 30 * 24 * 60 * 60 * 1000;
+
+/**
+ * Floor between portfolio analyses for a project when nothing new was recorded.
+ * Another project's decisions can change independently, so this still runs
+ * several times a working day — it just stops firing on every keystroke-level stop.
+ */
+const PORTFOLIO_MIN_INTERVAL_MS = 6 * 60 * 60 * 1000;
 
 /** Rough cost per 1M tokens by provider. Used for audit_log metadata only. */
 const COST_PER_M_INPUT: Record<string, number> = {
@@ -143,18 +157,29 @@ export function hookCommand(): Command {
           }
           output(`Session recorded for: ${project.name}`);
 
+          // Whether this run added anything to the portfolio. Drives whether the
+          // portfolio-wide LLM analysis below is worth running at all.
+          let recordedSomethingNew = false;
+
           // 2. Auto-extract decisions/patterns from session transcript (best-effort)
           try {
             const claudeDir = path.join(os.homedir(), '.claude');
             const jsonlPath = findRecentJsonlForProject(projectPath, claudeDir);
             if (jsonlPath) {
               const { events } = await getSessionDetail(jsonlPath);
-              const userTurns = events.filter((e) => e.type === 'user').length;
-              if (userTurns >= 5) {
+
+              // The Stop hook fires many times per session. Extract only the
+              // turns added since the last run instead of re-reading the whole
+              // transcript and paying to re-derive decisions already recorded.
+              const sessionKey = path.basename(jsonlPath, '.jsonl');
+              const watermark = svc.getExtractionWatermark(sessionKey);
+              const plan = planIncrementalExtraction(events, watermark);
+
+              if (plan.shouldExtract) {
                 if (!opts.dryRun) {
                   svc.emitPipelineEvent(project.id, 'pipeline.extraction.start');
                 }
-                const transcript = sessionToTranscript(events);
+                const transcript = sessionToTranscript(plan.events);
                 const existing = svc.getDecisionsForProject(project.id);
                 const extracted = await extractFromTranscript({ transcript, maxChars: 12000 });
 
@@ -197,16 +222,25 @@ export function hookCommand(): Command {
                     extractedPatterns++;
                   }
                 }
+                recordedSomethingNew = extractedDecisions > 0 || extractedPatterns > 0;
+
                 if (!opts.dryRun) {
+                  // Only advance the watermark once the run succeeded. A failure
+                  // leaves these turns unread so the next Stop retries them.
+                  svc.setExtractionWatermark(sessionKey, project.id, plan.nextWatermark);
+                  svc.pruneExtractionState(EXTRACTION_STATE_TTL_MS);
                   svc.emitPipelineEvent(project.id, 'pipeline.extraction.success', {
                     decision_count: String(extractedDecisions),
                     pattern_count: String(extractedPatterns),
+                    new_user_turns: String(plan.newUserTurns),
+                    events_read: String(plan.events.length),
+                    events_total: String(events.length),
                   });
                 }
               } else {
                 if (!opts.dryRun) {
                   svc.emitPipelineEvent(project.id, 'pipeline.hook.skip', {
-                    reason: `Only ${userTurns} user turn(s), need >= 5`,
+                    reason: plan.skipReason ?? 'Nothing new to extract',
                   });
                 }
               }
@@ -226,11 +260,38 @@ export function hookCommand(): Command {
             // Never block session teardown
           }
 
-          // 3. Sync CLAUDE.md so notes/decisions are ready for the next session
+          // 3. Budget check — evaluate and log state transitions.
+          // Runs BEFORE the sync so any active alert rides along in a single
+          // CLAUDE.md write instead of triggering a second one.
+          let budgetResults: BudgetCheckResult[] = [];
+          try {
+            if (!opts.dryRun) {
+              budgetResults = await svc.checkBudgets();
+              for (const result of budgetResults) {
+                if (result.transition) {
+                  const msg = `Budget "${result.configName}": ${result.transition.from} -> ${result.transition.to} ($${result.currentSpend.toFixed(2)})`;
+                  if (result.status === 'critical') {
+                    if (!opts.quiet) log.warn(`CRITICAL: ${msg}`);
+                  } else if (result.status === 'warning') {
+                    if (!opts.quiet) log.warn(`WARNING: ${msg}`);
+                  } else if (!opts.quiet) {
+                    output(`Budget cleared: ${result.configName}`);
+                  }
+                }
+              }
+            }
+          } catch {
+            // Budget check is best-effort — never block session teardown
+          }
+
+          // 4. Sync CLAUDE.md once so notes/decisions are ready for the next session
           try {
             if (!opts.dryRun) {
               svc.emitPipelineEvent(project.id, 'pipeline.sync.start');
-              const syncUpdated = svc.syncProject(project.id);
+              const hasActiveAlerts = budgetResults.some((r) => r.status !== 'clear' && !r.silenced);
+              const syncUpdated = hasActiveAlerts
+                ? svc.syncProject(project.id, budgetResults)
+                : svc.syncProject(project.id);
               if (syncUpdated) {
                 output(`CLAUDE.md synced: ${project.name}`);
               }
@@ -244,36 +305,27 @@ export function hookCommand(): Command {
             // Sync is best-effort — never block session teardown
           }
 
-          // 3.5. Budget check — evaluate and log state transitions
-          try {
-            if (!opts.dryRun) {
-              const budgetResults = await svc.checkBudgets();
-              for (const result of budgetResults) {
-                if (result.transition) {
-                  const msg = `Budget "${result.configName}": ${result.transition.from} -> ${result.transition.to} ($${result.currentSpend.toFixed(2)})`;
-                  if (result.status === 'critical') {
-                    if (!opts.quiet) log.warn(`CRITICAL: ${msg}`);
-                  } else if (result.status === 'warning') {
-                    if (!opts.quiet) log.warn(`WARNING: ${msg}`);
-                  } else if (!opts.quiet) {
-                    output(`Budget cleared: ${result.configName}`);
-                  }
-                }
-              }
-
-              // Re-sync CLAUDE.md with budget alerts if any are active
-              const hasActiveAlerts = budgetResults.some((r) => r.status !== 'clear' && !r.silenced);
-              if (hasActiveAlerts) {
-                svc.syncProject(project.id, budgetResults);
-              }
-            }
-          } catch {
-            // Budget check is best-effort — never block session teardown
-          }
-
-          // 4. Portfolio-level conflict & advisory detection (single LLM call)
+          // 5. Portfolio-level conflict & advisory detection (single LLM call).
+          // Gated: with unchanged inputs this re-derives the same advisories every
+          // stop, which dedup then discards. Run it when this session actually
+          // added something, or when enough time has passed that another project
+          // may have moved underneath us.
           const projectDecisions = svc.getDecisionsForProject(project.id);
           if (projectDecisions.length === 0) return;
+
+          const lastPortfolioRun = svc.getLastPortfolioRunAt(project.id);
+          const portfolioIsStale =
+            lastPortfolioRun === null || Date.now() - lastPortfolioRun >= PORTFOLIO_MIN_INTERVAL_MS;
+
+          if (!recordedSomethingNew && !portfolioIsStale) {
+            if (!opts.dryRun) {
+              svc.emitPipelineEvent(project.id, 'pipeline.portfolio.skip', {
+                reason: 'No new decisions this run and last analysis is recent',
+                minutes_since_last: String(Math.round((Date.now() - lastPortfolioRun) / 60_000)),
+              });
+            }
+            return;
+          }
 
           const allProjects = svc.listProjects();
           const { conflicts } = svc.checkConflicts([project.id]);
@@ -308,6 +360,13 @@ export function hookCommand(): Command {
           );
 
           try {
+            if (!opts.dryRun) {
+              // Marks the analysis timestamp the gate above reads on the next run.
+              svc.emitPipelineEvent(project.id, 'pipeline.portfolio.run', {
+                trigger: recordedSomethingNew ? 'new_decisions' : 'stale',
+                portfolio_size: String(portfolioProjects.length),
+              });
+            }
             const portfolioResult = await analyzePortfolio({
               focusProject,
               allProjects: portfolioProjects,
