@@ -47,7 +47,7 @@ describe('migrateDatabase', () => {
       .prepare('SELECT MAX(version) as v FROM schema_version')
       .get() as { v: number };
 
-    expect(version.v).toBe(5);
+    expect(version.v).toBe(6);
   });
 
   it('is idempotent — running twice does not throw', () => {

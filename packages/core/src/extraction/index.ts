@@ -2,3 +2,5 @@ export { extractFromTranscript, extractFromFileSummary, parseExtractionResponse 
 export type { ExtractionResult, ExtractedDecision, ExtractedPattern, ExtractedPreference, LlmUsageInfo } from './extractor.js';
 export { detectConflicts, areProjectsRelated, analyzePortfolio } from './conflict-detector.js';
 export type { DetectedConflict, ConflictDetectionInput, ProjectInfo, PortfolioAnalysisInput, DetectedInsight, PortfolioAnalysisResult } from './conflict-detector.js';
+export { planIncrementalExtraction, DEFAULT_MIN_NEW_USER_TURNS, DEFAULT_OVERLAP_EVENTS } from './incremental.js';
+export type { IncrementalPlan, IncrementalOptions } from './incremental.js';
