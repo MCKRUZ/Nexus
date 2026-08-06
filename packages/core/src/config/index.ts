@@ -1,7 +1,8 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
-import { generateEncryptionKey } from '../security/index.js';
+import { generateEncryptionKey } from '../security/crypto.js';
+import { writeKeyToKeychain } from '../security/key-store.js';
 
 export const NEXUS_DIR = path.join(os.homedir(), '.nexus');
 export const CONFIG_FILE = path.join(NEXUS_DIR, 'config.json');
@@ -9,7 +10,13 @@ export const DB_FILE = path.join(NEXUS_DIR, 'nexus.db');
 
 export interface NexusConfig {
   version: number;
-  encryptionKey: string; // TODO: migrate to OS keychain in a future release
+  /**
+   * Legacy location for the database key. New installs put it in the OS
+   * credential store instead and leave this unset — a key in this file travels
+   * with the folder, which defeats encrypting the database at all.
+   * Present only on installs predating `nexus db secure-key`.
+   */
+  encryptionKey?: string;
   createdAt: number;
   /** LLM provider for extraction pipeline. Default: 'anthropic' */
   llmProvider?: 'openrouter' | 'anthropic' | 'ollama';
@@ -147,11 +154,21 @@ export function resolveAnthropicBaseUrl(): string | undefined {
   return undefined;
 }
 
+/**
+ * Create the config and the database key.
+ *
+ * The key goes to the OS credential store when one exists, so it never lands in
+ * a file next to the database. Machines without a credential store fall back to
+ * config.json — encryption still protects a stolen disk, just not a copied folder.
+ */
 export function initConfig(): NexusConfig {
+  const key = generateEncryptionKey();
+  const storedInKeychain = writeKeyToKeychain(key);
+
   const config: NexusConfig = {
     version: 1,
-    encryptionKey: generateEncryptionKey(),
     createdAt: Date.now(),
+    ...(storedInKeychain ? {} : { encryptionKey: key }),
   };
   writeConfig(config);
   return config;

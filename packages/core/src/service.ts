@@ -6,6 +6,7 @@
 import { openDatabase, type NexusDb } from './db/connection.js';
 import { migrateDatabase } from './db/migrations.js';
 import { readConfig, DB_FILE } from './config/index.js';
+import { resolveEncryptionKey } from './security/key-store.js';
 import {
   findAllProjects,
   findProjectByPath,
@@ -114,9 +115,11 @@ export class NexusService {
 
   static open(dbPath?: string): NexusService {
     const config = readConfig();
+    // OS credential store first, legacy config.json value second.
+    const { key } = resolveEncryptionKey(config.encryptionKey);
     const db = openDatabase({
       dbPath: dbPath ?? DB_FILE,
-      encryptionKey: config.encryptionKey,
+      encryptionKey: key,
     });
     migrateDatabase(db);
     return new NexusService(db);

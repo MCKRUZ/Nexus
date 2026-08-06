@@ -2,3 +2,12 @@
 
 export { filterSecrets } from './secret-filter.js';
 export { generateEncryptionKey, deriveKey } from './crypto.js';
+export {
+  isKeychainAvailable,
+  readKeyFromKeychain,
+  writeKeyToKeychain,
+  deleteKeyFromKeychain,
+  resolveEncryptionKey,
+  type KeySource,
+  type ResolvedKey,
+} from './key-store.js';
