@@ -38,6 +38,23 @@ export interface NexusConfig {
   ollamaBaseUrl?: string;
   /** Ollama model name. Default: 'llama3.1:8b' */
   ollamaModel?: string;
+  /**
+   * Command that fetches a named credential, e.g.
+   * `["node", "C:/Users/you/.devsecrets/devsecrets.js", "get"]`.
+   *
+   * The secret's name is appended as the final argument and the value is read
+   * from stdout. This keeps credentials out of this file without tying Nexus to
+   * any particular secret store — see config/secrets.ts.
+   */
+  secretCommand?: string[];
+  /**
+   * Legacy inline Langfuse credentials.
+   *
+   * Superseded by `secretCommand`, which fetches NEXUS_LANGFUSE_BASE_URL,
+   * NEXUS_LANGFUSE_PUBLIC_KEY and NEXUS_LANGFUSE_SECRET_KEY on demand. Kept only
+   * so installs predating that keep working; anything here is readable by
+   * whatever can read this file.
+   */
   langfuse?: {
     baseUrl: string;
     publicKey: string;

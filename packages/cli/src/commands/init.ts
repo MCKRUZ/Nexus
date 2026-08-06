@@ -11,6 +11,7 @@ import {
   NEXUS_DIR,
   DB_FILE,
   NexusService,
+  LANGFUSE_SECRET_NAMES,
 } from '@nexus/core';
 import type { NexusConfig } from '@nexus/core';
 import { log } from '../lib/output.js';
@@ -195,15 +196,16 @@ export function initCommand(): Command {
             const ok = await testLangfuse(baseUrl.trim(), publicKey.trim(), secretKey.trim());
             if (ok) {
               console.log('Connected');
-              config = {
-                ...config,
-                langfuse: {
-                  baseUrl: baseUrl.trim(),
-                  publicKey: publicKey.trim(),
-                  secretKey: secretKey.trim(),
-                },
-              };
-              log.success('Langfuse configured');
+              // Deliberately NOT written to config.json. A credential in that
+              // file is readable by anything that can read the file, which is
+              // what moving secrets to an OS store was meant to end — writing
+              // them back here would quietly undo it on every fresh install.
+              log.success('Langfuse reachable');
+              log.warn('Store these in your secret store, then Nexus will pick them up:');
+              log.dim(`  ${LANGFUSE_SECRET_NAMES.baseUrl}   = ${baseUrl.trim()}`);
+              log.dim(`  ${LANGFUSE_SECRET_NAMES.publicKey} = ${publicKey.trim()}`);
+              log.dim(`  ${LANGFUSE_SECRET_NAMES.secretKey} = (the secret key you just entered)`);
+              log.dim('  Then set "secretCommand" in ~/.nexus/config.json to your store\'s read command.');
             } else {
               console.log('Failed');
               log.warn('Could not connect to Langfuse. Skipping — you can add it later in ~/.nexus/config.json');

@@ -5,7 +5,7 @@ import Database from 'better-sqlite3';
 import { Hono } from 'hono';
 import { cors } from 'hono/cors';
 import { serveStatic } from '@hono/node-server/serve-static';
-import { NexusService, isInitialized, listSessions, getSessionDetail, getNativeStats, computeSessionAnalytics, computeTokenAnalytics, computeContextOverhead, buildSessionSnapshot, getPricing, calculateCost, computeToolUsefulnessAnalytics, computeAllMcpToolAnalytics } from '@nexus/core';
+import { NexusService, isInitialized, listSessions, getSessionDetail, getNativeStats, computeSessionAnalytics, computeTokenAnalytics, computeContextOverhead, buildSessionSnapshot, getPricing, calculateCost, computeToolUsefulnessAnalytics, computeAllMcpToolAnalytics, resolveLangfuseCredentials } from '@nexus/core';
 import type { SessionAnalytics, TokenAnalytics, ContextOverhead, DoctorReport, PipelineStats, ModelPricing, LlmCostSummary, ToolUsefulnessAnalytics, McpToolAnalytics } from '@nexus/core';
 import type { DecisionKind, UpsertNoteParams } from '@nexus/core';
 
@@ -1032,14 +1032,15 @@ app.get('/api/sessions/:id/snapshot', (c) => {
 
 function getLangfuseConfig(): { baseUrl: string; authHeader: string } | null {
   try {
-    const cfgPath = path.join(os.homedir(), '.nexus', 'config.json');
-    const raw = fs.readFileSync(cfgPath, 'utf-8');
-    const cfg = JSON.parse(raw) as Record<string, unknown>;
-    const lf = cfg['langfuse'] as Record<string, string> | undefined;
-    if (!lf?.['baseUrl'] || !lf?.['publicKey'] || !lf?.['secretKey']) return null;
-    const credentials = Buffer.from(`${lf['publicKey']}:${lf['secretKey']}`).toString('base64');
+    // Credentials come from the machine's secret store now, not from
+    // config.json. resolveLangfuseCredentials falls back to the inline block for
+    // installs that predate the change, and returns null when Langfuse simply
+    // is not set up — which every caller below already handles.
+    const lf = resolveLangfuseCredentials();
+    if (!lf) return null;
+    const credentials = Buffer.from(`${lf.publicKey}:${lf.secretKey}`).toString('base64');
     return {
-      baseUrl: lf['baseUrl'].replace(/\/$/, ''),
+      baseUrl: lf.baseUrl.replace(/\/$/, ''),
       authHeader: `Basic ${credentials}`,
     };
   } catch {
