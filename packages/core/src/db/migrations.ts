@@ -284,6 +284,37 @@ const MIGRATIONS: Array<{ version: number; up: string }> = [
       CREATE INDEX IF NOT EXISTS idx_prompts_session ON prompts(session_key, created_at DESC);
     `,
   },
+  {
+    // Proposed — never applied — supersessions.
+    //
+    // Judging whether one decision makes another false is a call the pipeline
+    // gets right roughly two times in three, and the errors are invisible: a
+    // wrong retirement removes something true and nobody notices. So nothing is
+    // retired automatically. A proposal waits until the user is asked about
+    // something it bears on, and they decide.
+    //
+    // The UNIQUE pair is what keeps this from becoming a nagging list: once a
+    // proposal is rejected it can never be raised again.
+    version: 8,
+    up: `
+      CREATE TABLE IF NOT EXISTS supersession_proposals (
+        id             TEXT PRIMARY KEY,
+        project_id     TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+        superseding_id TEXT NOT NULL REFERENCES decisions(id) ON DELETE CASCADE,
+        superseded_id  TEXT NOT NULL REFERENCES decisions(id) ON DELETE CASCADE,
+        reason         TEXT,
+        proposed_at    INTEGER NOT NULL,
+        status         TEXT NOT NULL DEFAULT 'pending'
+                       CHECK(status IN ('pending','accepted','rejected')),
+        decided_at     INTEGER,
+        UNIQUE(superseding_id, superseded_id)
+      );
+      CREATE INDEX IF NOT EXISTS idx_supersession_superseded
+        ON supersession_proposals(superseded_id, status);
+      CREATE INDEX IF NOT EXISTS idx_supersession_project
+        ON supersession_proposals(project_id, status);
+    `,
+  },
 ];
 
 /** Schema version this build expects. */

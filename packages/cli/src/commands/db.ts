@@ -9,6 +9,7 @@
 
 import { Command } from 'commander';
 import fs from 'node:fs';
+import path from 'node:path';
 import { log } from '../lib/output.js';
 import {
   readConfig,
@@ -187,6 +188,63 @@ export function dbCommand(): Command {
         const count = svc.retireOpenAdvisories('cli');
         log.info(`Retired ${count} advisories.`);
         log.dim('  Rows kept with resolution "tier-retired" — reversible if you want them back.');
+      } finally {
+        svc.close();
+      }
+    });
+
+  cmd
+    .command('proposals')
+    .description('List decisions flagged as possibly out of date, and act on them')
+    .option('-p, --project <path>', 'Project path (defaults to current directory)')
+    .option('--accept <id>', 'Retire the older decision named by this proposal')
+    .option('--reject <id>', 'Keep it, and never raise this pair again')
+    .action((opts: { project?: string; accept?: string; reject?: string }) => {
+      const svc = NexusService.open();
+      try {
+        if (opts.accept || opts.reject) {
+          const id = (opts.accept ?? opts.reject) as string;
+          const proposal = svc.getProposal(id);
+          if (!proposal) {
+            log.error(`No proposal ${id}`);
+            process.exitCode = 1;
+            return;
+          }
+          if (opts.accept) {
+            svc.acceptProposal(id, 'cli');
+            log.info('Decision retired. The row stays, so this can be undone.');
+          } else {
+            svc.rejectProposal(id, 'cli');
+            log.info('Kept. This pair will not be raised again.');
+          }
+          return;
+        }
+
+        const projectPath = path.resolve(opts.project ?? process.cwd());
+        const project = svc.getProjectByPath(projectPath);
+        if (!project) {
+          log.warn(`No Nexus project registered at ${projectPath}`);
+          return;
+        }
+
+        const proposals = svc.listPendingProposals(project.id);
+        if (proposals.length === 0) {
+          log.info('Nothing flagged as out of date.');
+          return;
+        }
+
+        const decisions = svc.getDecisionsForProject(project.id);
+        const summary = (id: string) => decisions.find((d) => d.id === id)?.summary ?? '(unknown)';
+
+        log.info(`${proposals.length} decision(s) flagged as possibly out of date:`);
+        for (const p of proposals) {
+          console.log('');
+          log.warn(`  ${summary(p.supersededId)}`);
+          log.dim(`    possibly replaced by: ${summary(p.supersedingId)}`);
+          if (p.reason) log.dim(`    ${p.reason}`);
+          log.dim(`    nexus db proposals --accept ${p.id}   (retire it)`);
+          log.dim(`    nexus db proposals --reject ${p.id}   (keep it)`);
+        }
       } finally {
         svc.close();
       }

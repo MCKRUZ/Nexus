@@ -11,8 +11,9 @@ import {
   findSupersessionCandidates,
   adjudicateSupersession,
   applySupersession,
-  reconcileDecisions,
+  proposeSupersessions,
 } from './supersession.js';
+import { listPendingProposals } from '../repositories/supersession-proposal.js';
 import * as llm from '../llm/index.js';
 import * as config from '../config/index.js';
 
@@ -183,7 +184,7 @@ describe('applySupersession', () => {
   });
 });
 
-describe('reconcileDecisions', () => {
+describe('proposeSupersessions', () => {
   it('retires the stale decision that started all this', async () => {
     // The exact failure observed in production: the prompt hook reported the
     // database key as living in config.json hours after it had been moved out.
@@ -206,12 +207,17 @@ describe('reconcileDecisions', () => {
       2_000,
     );
 
-    const result = await reconcileDecisions(db, projectId, 2_000, 'cli');
-    expect(result.superseded).toBe(1);
+    const result = await proposeSupersessions(db, projectId, 2_000, 'cli');
+    expect(result.proposed).toBe(1);
 
+    // Flagged, NOT retired. Acting on it needs a person.
     const row = db.prepare('SELECT superseded_by FROM decisions WHERE id = ?').get(stale.id) as
       { superseded_by: string | null };
-    expect(row.superseded_by).not.toBeNull();
+    expect(row.superseded_by).toBeNull();
+
+    const pending = listPendingProposals(db, projectId);
+    expect(pending).toHaveLength(1);
+    expect(pending[0]?.supersededId).toBe(stale.id);
   });
 
   it('leaves everything alone when the model declines', async () => {
@@ -219,7 +225,7 @@ describe('reconcileDecisions', () => {
     at(record('security', 'sqlcipher encryption at rest'), 1_000);
     at(record('security', 'sqlcipher encryption key rotation cadence'), 2_000);
 
-    expect((await reconcileDecisions(db, projectId, 2_000, 'cli')).superseded).toBe(0);
+    expect((await proposeSupersessions(db, projectId, 2_000, 'cli')).proposed).toBe(0);
   });
 
   it('survives a provider outage without failing the session', async () => {
@@ -232,8 +238,10 @@ describe('reconcileDecisions', () => {
     at(record('security', 'sqlcipher encryption at rest'), 1_000);
     at(record('security', 'sqlcipher encryption at rest revisited'), 2_000);
 
-    await expect(reconcileDecisions(db, projectId, 2_000, 'cli')).resolves.toMatchObject({
-      superseded: 0,
+    // A provider outage must be reported, not disguised as a clean pass.
+    await expect(proposeSupersessions(db, projectId, 2_000, 'cli')).resolves.toMatchObject({
+      proposed: 0,
+      failed: 1,
     });
   });
 
@@ -248,36 +256,39 @@ describe('reconcileDecisions', () => {
     const b = at(record('security', 'sqlcipher encryption keychain storage second'), 2_000);
     const c = at(record('security', 'sqlcipher encryption keychain storage third'), 3_000);
 
-    await reconcileDecisions(db, projectId, 2_000, 'cli');
+    await proposeSupersessions(db, projectId, 2_000, 'cli');
 
     const state = (id: string) =>
       (db.prepare('SELECT superseded_by FROM decisions WHERE id = ?').get(id) as
         { superseded_by: string | null }).superseded_by;
 
-    // b retires a; b must then be off the table, so c cannot retire b.
-    expect(state(a.id)).toBe(b.id);
+    // b is proposed as replacing a; b is then off the table, so nothing is
+    // proposed against b in the same pass.
+    const pending = listPendingProposals(db, projectId);
+    expect(pending.map((p) => p.supersededId)).toEqual([a.id]);
+    expect(state(a.id)).toBeNull(); // proposed only — never applied
     expect(state(b.id)).toBeNull();
     expect(state(c.id)).toBeNull();
   });
 
-  it('records which decisions were retired, not merely how many', async () => {
+  it('audits which decision was flagged', async () => {
     // A bulk judgement call has to be precisely undoable.
     mockLlm({ replaces: [0] });
     const older = at(record('security', 'sqlcipher encryption keychain rotation'), 1_000);
     at(record('security', 'sqlcipher encryption keychain rotation revised'), 2_000);
 
-    await reconcileDecisions(db, projectId, 2_000, 'cli');
+    await proposeSupersessions(db, projectId, 2_000, 'cli');
 
     const row = db
-      .prepare("SELECT meta FROM audit_log WHERE operation='decision.supersede' ORDER BY at DESC LIMIT 1")
+      .prepare("SELECT meta FROM audit_log WHERE operation='supersession.propose' ORDER BY at DESC LIMIT 1")
       .get() as { meta: string };
-    expect(JSON.parse(row.meta).superseded_ids).toContain(older.id);
+    expect(JSON.parse(row.meta).superseded_id).toBe(older.id);
   });
 
   it('does not call the model for decisions with no plausible predecessor', async () => {
     const spy = vi.spyOn(llm, 'createProvider');
     at(record('security', 'a completely novel and unrelated choice'), 2_000);
-    await reconcileDecisions(db, projectId, 1_000, 'cli');
+    await proposeSupersessions(db, projectId, 1_000, 'cli');
     expect(spy).not.toHaveBeenCalled();
   });
 });

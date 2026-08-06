@@ -19,6 +19,7 @@ import { findProjectByPath } from '../repositories/project.js';
 import { findDecisionsByProject } from '../repositories/decision.js';
 import { findOpenConflictsForProject } from '../repositories/conflict.js';
 import { recordPrompt } from '../repositories/prompt.js';
+import { pendingProposalsFor } from '../repositories/supersession-proposal.js';
 import { significantTerms, rankCandidates, type Candidate } from './relevance.js';
 
 /**
@@ -84,9 +85,8 @@ export function buildPromptAdvisory(db: NexusDb, input: PromptHookInput): Prompt
   const terms = significantTerms(input.prompt);
   if (terms.length === 0) return { recorded: true, context: null, matchCount: 0 };
 
-  const decisions = findDecisionsByProject(db, project.id)
-    .filter((d) => !d.supersededBy)
-    .slice(0, DECISION_SEARCH_LIMIT);
+  const allDecisions = findDecisionsByProject(db, project.id).filter((d) => !d.supersededBy);
+  const decisions = allDecisions.slice(0, DECISION_SEARCH_LIMIT);
   const conflicts = findOpenConflictsForProject(db, project.id);
 
   const decisionCandidates: Candidate[] = decisions.map((d) => ({
@@ -120,13 +120,30 @@ export function buildPromptAdvisory(db: NexusDb, input: PromptHookInput): Prompt
     }
   }
 
+  let anyProposal = false;
   if (decisionMatches.length > 0) {
+    // A decision is only worth questioning at the moment it is being relied on.
+    // Raising these anywhere else produces a list nobody opens, which is exactly
+    // how the advisory tier died.
+    const proposals = pendingProposalsFor(db, decisionMatches.map((m) => m.id));
+
     lines.push('', 'Already decided:');
     for (const match of decisionMatches) {
       const decision = byId.get(match.id);
       if (!decision) continue;
       lines.push(`- **[${decision.kind}]** ${clip(decision.summary, MAX_SUMMARY_CHARS)}`);
       if (decision.rationale) lines.push(`  > ${clip(decision.rationale, MAX_RATIONALE_CHARS)}`);
+
+      const proposal = proposals.get(decision.id);
+      if (!proposal) continue;
+      const replacement = allDecisions.find((d) => d.id === proposal.supersedingId);
+      if (!replacement) continue;
+      anyProposal = true;
+      lines.push(
+        `  ⚠ May no longer hold — possibly replaced by: ${clip(replacement.summary, MAX_SUMMARY_CHARS)}`,
+      );
+      if (proposal.reason) lines.push(`    (${clip(proposal.reason, MAX_RATIONALE_CHARS)})`);
+      lines.push(`    proposal id: ${proposal.id}`);
     }
   }
 
@@ -135,6 +152,16 @@ export function buildPromptAdvisory(db: NexusDb, input: PromptHookInput): Prompt
     'Follow these unless the user is explicitly changing them. ' +
       'Run `nexus_query` if you need the surrounding detail.',
   );
+
+  if (anyProposal) {
+    lines.push(
+      '',
+      'A decision above is flagged as possibly out of date. If the user confirms it ' +
+        'no longer holds, call `nexus_supersede` with the proposal id and ' +
+        '`action: "accept"`; if it still holds, `action: "reject"` so it is never ' +
+        'raised again. Do not decide this on your own — ask.',
+    );
+  }
 
   return {
     recorded: true,

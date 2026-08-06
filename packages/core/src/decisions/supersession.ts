@@ -34,6 +34,7 @@ import { auditLog } from '../repositories/audit.js';
 import { significantTerms, rankCandidates, type Candidate } from '../advisories/relevance.js';
 import { readConfig } from '../config/index.js';
 import { createProvider } from '../llm/index.js';
+import { proposeSupersession } from '../repositories/supersession-proposal.js';
 import type { LlmUsageInfo } from '../extraction/extractor.js';
 
 /**
@@ -282,8 +283,8 @@ export function applySupersession(
 export interface ReconcileResult {
   /** Decisions examined. */
   examined: number;
-  /** Earlier decisions retired as a result. */
-  superseded: number;
+  /** Proposals raised. Nothing is retired here — see proposeSupersessions. */
+  proposed: number;
   /**
    * Adjudications that could not be completed.
    *
@@ -299,17 +300,23 @@ export interface ReconcileResult {
 }
 
 /**
- * Reconcile decisions recorded since a point in time against their predecessors.
+ * Look for decisions that later ones may have made false, and propose them.
+ *
+ * Proposes. Never retires. The judgement is right about two times in three and
+ * its errors are silent, so the decision to act on one belongs to a person — the
+ * prompt hook raises a proposal when the user asks about something it bears on,
+ * which is the moment they can actually judge it. A proposal sitting in a list
+ * nobody opens is the failure the advisory tier died of.
  *
  * One integration point covers every way a decision can be recorded — the
  * extractor, the MCP tool and the CLI all land in the same table — and keeps the
- * model call off every interactive path. It is meant to run in the Stop hook,
- * which already does the session's other LLM work.
+ * model call off every interactive path. Meant for the Stop hook, which already
+ * does the session's other model work.
  *
  * A decision that fails adjudication is skipped rather than retried: this runs
  * every session, so the next one picks it up.
  */
-export async function reconcileDecisions(
+export async function proposeSupersessions(
   db: NexusDb,
   projectId: string,
   since: number,
@@ -323,26 +330,29 @@ export async function reconcileDecisions(
     )
     .all(projectId, since) as DecisionRow[];
 
-  const result: ReconcileResult = { examined: 0, superseded: 0, failed: 0, llmUsage: [] };
+  const result: ReconcileResult = { examined: 0, proposed: 0, failed: 0, llmUsage: [] };
 
   /**
-   * Decisions that have already retired something in this pass.
+   * Decisions this pass has already settled — either by proposing them as a
+   * replacement, or by flagging them as replaced.
    *
-   * Without this, a pass over a day's work collapses into a chain: A retires B,
-   * then C retires A, then D retires C. Every link looks defensible on its own
-   * and the survivor ends up unrelated to where the chain started. Observed on
-   * live data — a chain ending on third-party credential handling took the
-   * database-key decision with it, leaving nothing that said where the key lived.
+   * Without the first, a pass over a day's work chains: A replaces B, then C
+   * replaces A, then D replaces C. Every link looks defensible alone and the
+   * survivor ends up unrelated to where the chain started. Seen on live data — a
+   * chain ending on third-party credential handling swallowed the database-key
+   * decision, leaving nothing that said where the key lived.
    *
-   * Once a decision has been used to retire something, it is the current answer
-   * for that subject and is off the table until the next pass.
+   * Without the second, several successors each flag the same stale decision,
+   * which asks the same question repeatedly rather than asking more questions.
+   *
+   * Proposals make a mistake survivable rather than harmless, so both stay.
    */
   const protectedIds = new Set<string>();
 
   for (const row of rows) {
     const decision = rowToDecision(row);
 
-    // It may itself have been retired earlier in this same pass.
+    // It may itself have been retired by an accepted proposal in the meantime.
     const current = db
       .prepare('SELECT superseded_by FROM decisions WHERE id = ?')
       .get(decision.id) as { superseded_by: string | null } | undefined;
@@ -355,15 +365,22 @@ export async function reconcileDecisions(
     try {
       const verdict = await adjudicateSupersession(decision, candidates);
       if (verdict.llmUsage) result.llmUsage.push(verdict.llmUsage);
-      const applied = applySupersession(
-        db,
-        decision.id,
-        verdict.supersededIds,
-        source,
-        verdict.reason,
-      );
-      result.superseded += applied;
-      if (applied > 0) protectedIds.add(decision.id);
+
+      let raised = 0;
+      for (const supersededId of verdict.supersededIds) {
+        const created = proposeSupersession(
+          db,
+          { projectId, supersedingId: decision.id, supersededId, reason: verdict.reason },
+          source,
+        );
+        if (!created) continue;
+        raised++;
+        // Already flagged. A second successor flagging the same decision adds a
+        // duplicate question about the same fact, not a second fact.
+        protectedIds.add(supersededId);
+      }
+      result.proposed += raised;
+      if (raised > 0) protectedIds.add(decision.id);
     } catch (err) {
       // A provider outage must not fail the session's Stop hook, but it must
       // not masquerade as a clean pass either.

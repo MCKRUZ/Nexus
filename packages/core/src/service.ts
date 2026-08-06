@@ -79,7 +79,8 @@ import type { Project, Decision, Pattern, Preference, Conflict, Note, AuditEntry
 import type { DecisionKind } from './types/index.js';
 import { runDoctor, type DoctorReport } from './diagnostics/doctor.js';
 import { emitPipelineEvent, getPipelineStats, getLlmCosts, getLastPortfolioRunAt, getLastReconcileRunAt, type PipelineEvent, type PipelineStats, type LlmCostSummary } from './diagnostics/pipeline.js';
-import { reconcileDecisions, type ReconcileResult } from './decisions/supersession.js';
+import { proposeSupersessions, type ReconcileResult } from './decisions/supersession.js';
+import { listPendingProposals, acceptProposal, rejectProposal, getProposal, type SupersessionProposal } from './repositories/supersession-proposal.js';
 import { runDoctorFix, type DoctorFixResult } from './diagnostics/doctor-fix.js';
 import { syncClaudeMd } from './sync/claude-md-sync.js';
 import type { PortfolioEntry } from './sync/claude-md-sync.js';
@@ -483,17 +484,35 @@ export class NexusService {
 
   /** Epoch ms of the last portfolio analysis for a project, or null if never. */
   /**
-   * Retire decisions that later ones have overtaken.
+   * Propose — never apply — supersessions for decisions recorded since `since`.
    *
    * Only examines decisions recorded since the last run, because each one may
    * cost a model call. See decisions/supersession.ts.
    */
-  async reconcileDecisions(
+  async proposeSupersessions(
     projectId: string,
     since: number,
     source: 'cli' | 'mcp' | 'daemon' = 'daemon',
   ): Promise<ReconcileResult> {
-    return reconcileDecisions(this.db, projectId, since, source);
+    return proposeSupersessions(this.db, projectId, since, source);
+  }
+
+  listPendingProposals(projectId: string): SupersessionProposal[] {
+    return listPendingProposals(this.db, projectId);
+  }
+
+  getProposal(id: string): SupersessionProposal | undefined {
+    return getProposal(this.db, id);
+  }
+
+  /** Retire the older decision. Reversible — the row stays. */
+  acceptProposal(id: string, source: 'cli' | 'mcp' | 'daemon' = 'mcp'): boolean {
+    return acceptProposal(this.db, id, source);
+  }
+
+  /** Keep the older decision. This pair is never raised again. */
+  rejectProposal(id: string, source: 'cli' | 'mcp' | 'daemon' = 'mcp'): boolean {
+    return rejectProposal(this.db, id, source);
   }
 
   getLastReconcileRunAt(projectId: string): number | null {

@@ -909,6 +909,88 @@ server.tool(
 
 // ─── Start ────────────────────────────────────────────────────────────────────
 
+// ─── nexus_supersede ─────────────────────────────────────────────────────────
+
+server.tool(
+  'nexus_supersede',
+  'Accept or reject a proposal that one decision has made an earlier one out of date. ' +
+    'Only call this after the user has confirmed which way it goes — never decide alone.',
+  {
+    proposalId: z.string().describe('Proposal id, shown alongside the flagged decision'),
+    action: z
+      .enum(['accept', 'reject', 'list'])
+      .describe(
+        'accept: retire the older decision. reject: keep it, and never raise this pair again. ' +
+          'list: show pending proposals for a project.',
+      ),
+    projectPath: z.string().optional().describe('Absolute project path (required for list)'),
+  },
+  async ({ proposalId, action, projectPath }) => {
+    try {
+      if (action === 'list') {
+        if (!projectPath) {
+          return { content: [{ type: 'text', text: 'projectPath is required for list' }], isError: true };
+        }
+        const proposals = withService((svc) => {
+          const project = svc.getProjectByPath(projectPath);
+          if (!project) return null;
+          return svc.listPendingProposals(project.id).map((p) => ({
+            proposal: p,
+            older: svc.getDecisionsForProject(project.id).find((d) => d.id === p.supersededId),
+            newer: svc.getDecisionsForProject(project.id).find((d) => d.id === p.supersedingId),
+          }));
+        });
+        if (!proposals) {
+          return { content: [{ type: 'text', text: `No project registered at ${projectPath}` }], isError: true };
+        }
+        if (proposals.length === 0) {
+          return { content: [{ type: 'text', text: 'No pending supersession proposals.' }] };
+        }
+        const lines = proposals.map(
+          (p) =>
+            `- [${p.proposal.id}]\n    may be out of date: ${p.older?.summary ?? '(unknown)'}\n    replaced by:       ${p.newer?.summary ?? '(unknown)'}`,
+        );
+        return {
+          content: [{ type: 'text', text: `## Pending proposals (${proposals.length})\n\n${lines.join('\n')}` }],
+        };
+      }
+
+      const proposal = withService((svc) => svc.getProposal(proposalId));
+      if (!proposal) {
+        return { content: [{ type: 'text', text: `No proposal ${proposalId}` }], isError: true };
+      }
+      if (proposal.status !== 'pending') {
+        return {
+          content: [{ type: 'text', text: `Proposal ${proposalId} was already ${proposal.status}.` }],
+          isError: true,
+        };
+      }
+
+      if (action === 'accept') {
+        withService((svc) => svc.acceptProposal(proposalId, 'mcp'));
+        return {
+          content: [
+            {
+              type: 'text',
+              text: 'Decision retired. It stays in the database marked as superseded, so this can be undone.',
+            },
+          ],
+        };
+      }
+
+      withService((svc) => svc.rejectProposal(proposalId, 'mcp'));
+      return {
+        content: [{ type: 'text', text: 'Kept. This pair will not be raised again.' }],
+      };
+    } catch (err) {
+      return {
+        content: [{ type: 'text', text: `Supersede error: ${err instanceof Error ? err.message : String(err)}` }],
+        isError: true,
+      };
+    }
+  },
+);
+
 async function main() {
   // The connection outlives each request now, so it needs an explicit release:
   // without one the WAL is left for the next opener to recover.

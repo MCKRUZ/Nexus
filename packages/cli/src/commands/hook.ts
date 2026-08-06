@@ -269,22 +269,22 @@ export function hookCommand(): Command {
           //
           // Gated on this run having recorded something. With no new decisions
           // there is nothing to reconcile, and each examination costs a model call.
-          // DISABLED pending a fix. The first live run collapsed chains: each
-          // decision retired its predecessor, every link individually defensible,
-          // and the chain terminated on an unrelated decision — leaving nothing
-          // in the base that stated where the database key lives. Re-enable only
-          // once the adjudicator refuses restatements and chaining is blocked.
-          const RECONCILE_ENABLED = false;
+          // This proposes; it never retires anything. An earlier version applied
+          // its own judgement and had to be reverted — it collapsed chains and
+          // took correct decisions with it. Proposals are safe to generate
+          // automatically because acting on one requires a person.
           try {
-            if (RECONCILE_ENABLED && !opts.dryRun && recordedSomethingNew) {
+            if (!opts.dryRun && recordedSomethingNew) {
               const since = svc.getLastReconcileRunAt(project.id) ?? 0;
-              const reconciled = await svc.reconcileDecisions(project.id, since, 'daemon');
+              const reconciled = await svc.proposeSupersessions(project.id, since, 'daemon');
               svc.emitPipelineEvent(project.id, 'pipeline.reconcile.run', {
                 examined: String(reconciled.examined),
-                superseded: String(reconciled.superseded),
+                proposed: String(reconciled.proposed),
+                failed: String(reconciled.failed),
+                ...(reconciled.failureReason ? { failure: reconciled.failureReason } : {}),
               });
-              if (reconciled.superseded > 0) {
-                output(`Retired ${reconciled.superseded} superseded decision(s)`);
+              if (reconciled.proposed > 0) {
+                output(`Flagged ${reconciled.proposed} decision(s) as possibly out of date`);
               }
             } else if (!opts.dryRun) {
               svc.emitPipelineEvent(project.id, 'pipeline.reconcile.skip', {
