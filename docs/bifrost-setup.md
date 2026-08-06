@@ -1,4 +1,4 @@
-# Bifrost Setup — Mac Mini (192.168.50.189)
+# Bifrost Setup — Mac Mini (matthews-mac-mini.tail2800e3.ts.net)
 
 ## Overview
 
@@ -32,7 +32,7 @@ AFTER:
 
 SSH into Mac Mini:
 ```bash
-ssh matthewkruczek@192.168.50.189
+ssh matthewkruczek@matthews-mac-mini.tail2800e3.ts.net
 ```
 
 Create Bifrost directory:
@@ -80,7 +80,7 @@ services:
 
 ### Configure MCP Servers
 
-Open the Bifrost UI at `http://192.168.50.189:8090` and add:
+Open the Bifrost UI at `http://matthews-mac-mini.tail2800e3.ts.net:8090` and add:
 
 1. **Anthropic provider** — Add your API key (or the key Bifrost will proxy to)
 2. **MCP servers** — Add via the UI or `config.json`:
@@ -131,7 +131,7 @@ In `~/.claude/settings.json`, make these changes:
 ### Change ANTHROPIC_BASE_URL
 ```diff
 - "ANTHROPIC_BASE_URL": "http://bablyon:4040",
-+ "ANTHROPIC_BASE_URL": "http://192.168.50.189:8090/anthropic",
++ "ANTHROPIC_BASE_URL": "http://matthews-mac-mini.tail2800e3.ts.net:8090/anthropic",
 ```
 
 ### Replace mcp-hub with Bifrost
@@ -155,7 +155,7 @@ In `~/.claude/settings.json`, make these changes:
 -   },
 +   "bifrost": {
 +     "type": "http",
-+     "url": "http://192.168.50.189:8090/mcp",
++     "url": "http://matthews-mac-mini.tail2800e3.ts.net:8090/mcp",
 +     "description": "Bifrost MCP gateway — github, context7, sequential-thinking, firecrawl"
 +   },
     "nexus-local": {
@@ -185,7 +185,7 @@ docker stop context-lens  # or however it's running
 ## Step 4: Verify
 
 1. Start a new Claude Code session
-2. Check Bifrost dashboard at http://192.168.50.189:8090/logs
+2. Check Bifrost dashboard at http://matthews-mac-mini.tail2800e3.ts.net:8090/logs
 3. Verify MCP tools are available: ask Claude to use a GitHub or Context7 tool
 4. Verify nexus tools still work: `nexus_query "test"`
 5. Verify context-mode still works: run a `ctx_execute`

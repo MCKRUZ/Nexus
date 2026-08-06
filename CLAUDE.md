@@ -125,25 +125,17 @@ When compacting, preserve:
 ## Nexus Intelligence
 
 *Auto-updated by Nexus — do not edit this section manually.*
-*Last sync: 2026-04-08*
+*Last sync: 2026-08-06*
 
 ### Portfolio
 | Project | Description | Tech |
 |---------|------------|------|
-| jarvis-stack | — | — |
+| ai-video-producer | — | — |
 | personal-brand-assistant | — | — |
 | project-avatar | — | — |
-| ComfyUI | **ComfyUI** — the main local ComfyUI installation at E:/ComfyUI-Easy-Install/Co… | — |
-| sage-voice | **sage-voice** — MCKRUZ project for Sage's voice capabilities.
-
-Sage is the AI … | — |
 | matthewkruczek-ai | **matthewkruczek.ai** — static personal brand website for Matthew Kruczek (EY M… | — |
-| claude-code-mastery | **Claude Code Mastery** — the definitive Claude Code setup and configuration sk… | — |
-| ProjectPrism | **Prismcast / ProjectPrism** — autonomous AI news aggregation, synthesis, and v… | — |
-| ComfyUI Expert | **VideoAgent / ComfyUI Expert** — session-scoped Claude Code orchestrator that … | — |
-| ArchitectureHelper | **AzureCraft / ArchitectureHelper** — AI-native Azure infrastructure designer f… | — |
 | **Nexus** (this) | Nexus is a local-first cross-project intelligence layer for Claude Code. | — |
-| _+28 inactive_ | — | — |
+| _+36 inactive_ | — | — |
 
 ### Project Context
 #### Roadmap: Next Features
@@ -180,37 +172,26 @@ The Claude Config dashboard page only shows MCP servers from settings.json/setti
 #### OpenClaw Ollama Integration & Stop Hook Architecture
 (1) OpenClaw uses agent model fallback chains requiring tool-capable models (Claude Opus/Sonnet, llama3.1:8b); (2) Two separate Ollama patterns: Open…
 
-### Context from personal-brand-assistant
-#### Deployment: Local Docker on Furious
-## PBA Deployment
-
-- **Host:** Furious (local machine)
-- **Runtime:** Docker Compose
-- **Branch deployed:** main
-- **Last known deploy:** manual, nee…
-*Tags: deployment, docker, furious, infrastructure*
-
-#### Website Analytics: Google Search Console + GA4
-## Website Analytics for matthewkruczek.ai
-
-### Service Account Credentials
-- **File:** `secrets/google-analytics-sa.json` (gitignored)
-- **Email:** …
-*Tags: analytics, google-search-console, ga4, matthewkruczek-ai, seo, website-stats*
-
 ### Recorded Decisions
-- **[security]** Add database-level CHECK constraints on tier and severity enum columns
-  > Enforce valid values at storage layer to prevent invalid state propagation
-- **[security]** Add dismissal tracking via `dismissAdvisory(db, id, source)` setting resolved_a…
-  > Allows users to dismiss non-actionable advisories while preserving dismissal history (source/timestamp) for debugging false positive patterns and improving LLM prompt calibration.
-- **[security]** Validate project relationships through explicit parent/child/sibling/tag links …
-  > Reduces attack surface and prevents spurious detections by scoping comparison scope to semantically related projects only
-- **[security]** Add severity field to Conflict type for prioritized display of architecture vio…
-  > Enables filtering/sorting by impact level; distinguishes critical issues from minor inconsistencies in UI display
-- **[security]** Use taskkill /F for forceful process termination without waiting for graceful s…
-  > Installer must ensure clean file access; graceful shutdown unnecessary for pre-install cleanup
+- **[security]** Verify vault write operations by immediately reading them back before removing …
+  > Confirmed stored credentials were actually persisted to vault before deleting .pre-vault-bak file, preventing data loss from silent write failures.
+- **[security]** Use project-prefixed naming convention for vault credentials (e.g., NEXUS_LANGF…
+  > Existing LANGFUSE_SECRET_KEY in vault is used by hermes-agent and claude-code-mastery pointing to different Langfuse instance. Nexus has separate Synology instance credentials requiring distinct names to prevent breaking dependent projects.
+- **[security]** Never expose secrets through shell argument printing; compare sensitive values …
+  > PowerShell error messages printed plaintext secrets when command failed; must compare within Node to avoid accidental exposure through error paths
+- **[security]** Database must verify encryption on every open by checking file header, decrypta…
+  > Previous implementation silently succeeded without confirming encryption actually worked (SQLite ignores unknown pragmas). Health checks only verified queryability, not secrecy. Now the system fails open—refusing to open if encryption proof fails—rather than silently degrading.
+- **[security]** Store database encryption key in Windows Credential Manager instead of plaintex…
+  > Encryption at rest was ineffective with key in plaintext next to database. Credential Manager is in-process, available on Windows, and avoids 500ms+ round-trips through PowerShell/devsecrets. Allows secure separation of key and encrypted artifact.
+
+### Active Conflicts
+- [medium] personal-brand-assistant stores OAuth credentials in both DevSecrets PowerShell vault and .env files with vault as primary source of truth, while Nexus explicitly plans to migrate away from plaintext config.json to OS credential store—shared deployment infrastructure will have conflicting credential management strategies.
+- [medium] jarvis-stack explicitly excludes Anthropic models (Google Gemini + OpenAI GPT only via OpenRouter) while Nexus assumes Claude integration via MCP for cross-project decision sync—if jarvis-stack consumes Nexus decisions via MCP, routing Claude outputs through OpenRouter creates vendor lock-in against stated goals.
+- [high] jarvis-stack eliminates Anthropic models entirely (Google Gemini + OpenAI GPT only) via OpenRouter, but Nexus and other projects use Claude MCP tools and session-based decision persistence—switching jarvis-stack to non-Anthropic models breaks Claude-integrated workflows in shared MCP ecosystem.
+- [high] claude-code-mastery's MCP gateway (Bifrost at 192.168.50.189:8090) and Nexus's MCP tool naming convention (nexus_query, nexus_note, nexus_decide) require coordinated registration in the same Claude settings—conflicting MCP server registrations or duplicate tool names will cause routing failures.
 
 > **Cross-project rule**: Before making decisions that affect shared concerns (APIs, auth, data formats, deployment) or asking the user for server/SSH/infrastructure details, run `nexus_query` to check for existing decisions, notes, and conflicts across the portfolio.
+> When the user says "save to nexus" or you learn something worth preserving across sessions (project identity, key entities, architecture decisions, cross-project relationships), call `nexus_note` with `action: "set"` and a descriptive `title`.
 
-*[Nexus: run `nexus query` to search full knowledge base]*
+*[Nexus: `nexus_query` to search | `nexus_note` to save | `nexus_decide` to record decisions]*
 <!-- nexus:end -->

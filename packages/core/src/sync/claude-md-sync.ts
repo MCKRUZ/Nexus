@@ -217,10 +217,11 @@ function buildLines(input: SyncInput, opts: {
 
   // ── Behavioral Rule ────────────────────────────────────────────────────────
   lines.push('> **Cross-project rule**: Before making decisions that affect shared concerns (APIs, auth, data formats, deployment) or asking the user for server/SSH/infrastructure details, run `nexus_query` to check for existing decisions, notes, and conflicts across the portfolio.');
+  lines.push('> When the user says "save to nexus" or you learn something worth preserving across sessions (project identity, key entities, architecture decisions, cross-project relationships), call `nexus_note` with `action: "set"` and a descriptive `title`.');
   lines.push('');
 
   // ── Footer ─────────────────────────────────────────────────────────────────
-  lines.push(`*[Nexus: run \`nexus query\` to search full knowledge base]*`);
+  lines.push(`*[Nexus: \`nexus_query\` to search | \`nexus_note\` to save | \`nexus_decide\` to record decisions]*`);
   lines.push(SECTION_END);
   return lines;
 }
