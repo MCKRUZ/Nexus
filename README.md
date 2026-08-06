@@ -1,371 +1,215 @@
 # Nexus
 
-> The missing layer between your projects and your AI.
+**Claude Code forgets everything between sessions. Nexus doesn't.**
 
-Nexus is a **secure, local-first intelligence layer** that observes, learns, and coordinates across all Claude Code sessions. It builds a cross-project knowledge graph — tracking architectural decisions, code patterns, preferences, and notes — and syncs that context back into your `CLAUDE.md` files automatically.
-
-Everything stays on your machine. No cloud. No telemetry.
-
----
-
-## Features
-
-- **Decision tracking** — Record architecture, library, pattern, naming, and security decisions per project
-- **Pattern extraction** — LLM-powered extraction of recurring code patterns from Claude Code sessions
-- **Notes** — Freeform context blocks per project, synced into `CLAUDE.md` and surfaced to every future session
-- **Conflict detection** — Detect when projects make contradictory decisions (e.g., two projects using conflicting auth approaches)
-- **CLAUDE.md sync** — Automatically writes learned context back into each project's `CLAUDE.md`
-- **MCP server** — Expose Nexus tools directly to Claude Code via the Model Context Protocol
-- **Desktop app** — Native Tauri v2 desktop application; single `.exe`, system tray, no separate server required
-- **Web dashboard** — React/Vite UI with observability, project graph, and activity feed (also runs standalone)
-- **Native session viewer** — Browse all Claude Code sessions from `~/.claude/projects/` with inline event timelines, tool call inspection, and aggregate stats — no configuration required
-- **Langfuse overlay** — Optional: add Langfuse credentials to unlock LLM cost/token charts, trace trees, and session groupings
+[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
+[![Release](https://img.shields.io/github/v/release/MCKRUZ/Nexus?include_prereleases&sort=semver)](https://github.com/MCKRUZ/Nexus/releases)
+[![Platforms](https://img.shields.io/badge/platforms-Windows%20%7C%20macOS%20%7C%20Linux-blue)](https://github.com/MCKRUZ/Nexus/releases)
+[![Local-first](https://img.shields.io/badge/data-stays%20on%20your%20machine-informational)](#security)
 
 ---
 
-## Stack
+## The problem
 
-| Layer | Technology |
-|-------|-----------|
-| Runtime | Node.js 22+, TypeScript |
-| Package manager | pnpm workspaces |
-| Database | SQLite via `better-sqlite3` + SQLCipher (encrypted) |
-| CLI | Commander.js |
-| MCP | `@modelcontextprotocol/sdk` |
-| LLM extraction | `@anthropic-ai/sdk` (claude-haiku-4-5) |
-| HTTP server | Hono |
-| Dashboard | React 18 + Vite |
-| Desktop app | Tauri v2 (Rust + WebView) |
+Every Claude Code session starts from nothing. You explain your architecture again.
+You re-decide things you already decided. And because each project is its own island,
+you can pick JWT auth in one repo on Monday and sessions in another on Thursday
+without anything noticing the two now disagree.
 
----
+The knowledge exists — it's scattered across hundreds of transcripts you'll never reread.
 
-## Package Structure
+## What Nexus does
 
-```
-packages/
-  core/       — Shared types, DB layer, security, LLM extraction, CLAUDE.md sync
-  cli/        — nexus CLI commands
-  mcp/        — MCP server (nexus_* tools exposed to Claude Code)
-  server/     — Hono HTTP server at localhost:47340
-  dashboard/  — React/Vite web dashboard + Tauri desktop shell
-    src-tauri/  — Rust Tauri backend; spawns server sidecar, manages tray
-```
+Nexus watches your Claude Code sessions, pulls out the decisions and patterns worth
+keeping, and puts the important ones back in front of Claude automatically.
 
-**Boundary rules:**
-- `core` has zero CLI/MCP/server-specific code — it is the pure logic layer
-- `cli` and `mcp` import from `core` only, never each other
-- `dashboard` calls the HTTP server at `/api/*` — no direct imports from core
+- **Remembers decisions across projects.** Architecture, library, naming, and security
+  choices are extracted from real sessions — not typed into a form you'll stop maintaining.
+- **Notices when you contradict yourself.** Two projects making incompatible choices get
+  flagged, with both sides quoted.
+- **Questions its own memory.** When a stored decision looks superseded, Nexus asks you
+  rather than quietly deleting it. Reject it once and it never asks again.
+- **Feeds context back automatically.** A budgeted summary is written into each project's
+  `CLAUDE.md`, so every future session starts already knowing.
+- **Answers directly.** Claude gets tools (`nexus_query`, `nexus_decide`, and others) to
+  search your history mid-conversation.
+
+Everything runs on your machine. The database is encrypted, no data leaves, and there is
+no account to create.
 
 ---
 
-## Installation
+## Install
 
-There are three ways to run Nexus, from easiest to most flexible.
+### Desktop app
 
-### Option A: Desktop App (pre-built)
+Download for your platform from [**Releases**](https://github.com/MCKRUZ/Nexus/releases):
 
-Download the latest `.exe` installer from [Releases](https://github.com/MCKRUZ/Nexus/releases) and run it. The app:
+| Platform | File |
+|----------|------|
+| Windows | `Nexus_x.y.z_x64-setup.exe` (or the `.msi`) |
+| macOS (Apple Silicon) | `Nexus_x.y.z_aarch64.dmg` |
+| macOS (Intel) | `Nexus_x.y.z_x64.dmg` |
+| Linux | `.AppImage` (portable) or `.deb` (Debian/Ubuntu) |
 
-1. Spawns the Nexus HTTP server automatically as a background sidecar
-2. Opens the dashboard in a native window
-3. Hides to the system tray when you close the window (server keeps running)
-4. Quit from the tray menu to exit completely
+The app runs its own local server, opens a native window, and lives in your system tray.
+No Node.js and no terminal required.
 
-No Node.js, no terminal, no manual setup required.
+> **The installers are not code-signed.** Signing certificates cost money per platform and
+> this is a local-first tool with no company behind it, so your OS will warn you on first
+> launch: Windows SmartScreen shows "Windows protected your PC" (*More info* → *Run anyway*),
+> and macOS Gatekeeper refuses to open it (right-click the app → *Open*). If you'd rather not
+> trust an unsigned binary, build from source below — that's the honest recommendation.
 
-### Option B: From Source (recommended for contributors)
+### From source
 
-#### Prerequisites
+**Prerequisites**
 
 | Requirement | Why |
 |-------------|-----|
-| [Node.js 22+](https://nodejs.org/) | Runtime for all packages |
-| [pnpm](https://pnpm.io/) | Workspace package manager (`npm install -g pnpm`) |
-| C++ build tools | Required by `better-sqlite3` native addon |
-| [Rust + Cargo](https://rustup.rs/) | Only needed if building the desktop app (Option C) |
+| [Node.js 22+](https://nodejs.org/) | Runs every package |
+| [pnpm 9+](https://pnpm.io/) | Workspace manager (`npm install -g pnpm`) |
+| C++ build tools | Compiles the native SQLite driver |
+| [Rust](https://rustup.rs/) | Only if you want the desktop app |
 
-**Windows note:** Install "Desktop development with C++" workload from [Visual Studio Build Tools](https://visualstudio.microsoft.com/visual-cpp-build-tools/) for the native SQLite compilation.
-
-**macOS:** `xcode-select --install` provides the necessary build tools.
-
-**Linux:** `sudo apt install build-essential python3` (Debian/Ubuntu) or equivalent.
-
-#### Clone and build
+C++ tooling by platform: Windows needs the "Desktop development with C++" workload from
+[Visual Studio Build Tools](https://visualstudio.microsoft.com/visual-cpp-build-tools/);
+macOS needs `xcode-select --install`; Debian/Ubuntu needs `build-essential python3`.
 
 ```bash
 git clone https://github.com/MCKRUZ/Nexus.git
 cd Nexus
 pnpm install
 pnpm build
-```
-
-#### Initialize Nexus
-
-```bash
 node packages/cli/dist/index.js init
 ```
 
-The interactive wizard walks you through:
+`init` walks you through generating an encryption key, choosing an extraction model,
+wiring up Claude Code's hooks and MCP server, and registering your first project.
+Then restart Claude Code so it picks up the new tools.
 
-1. **Encryption key** — auto-generated SQLCipher key for your database
-2. **LLM provider** — Anthropic (API key or Claude Code OAuth), OpenRouter, or Ollama (local/free)
-3. **Langfuse** — optional observability tracing (base URL + keys, with live connection test)
-4. **Claude Code integration** — installs MCP server, Stop hook, and session tracking hooks
-5. **Memory rule** — drops `nexus-memory.md` into `~/.claude/rules/`
-6. **Project registration** — registers the current directory as your first project
-7. **Health check** — verifies everything is wired up correctly
-
-This creates `~/.nexus/nexus.db` (encrypted) and `~/.nexus/config.json`.
-
-> **Important:** Back up `~/.nexus/config.json` — it contains your encryption key. Lose it and your database is unrecoverable.
-
-#### Make `nexus` available globally (optional)
+To build the desktop app yourself:
 
 ```bash
-# Link the CLI so you can run "nexus" from anywhere
-cd packages/cli && pnpm link --global
+pnpm --filter @nexus/server compile   # server → standalone executable
+pnpm tauri:build                      # → src-tauri/target/release/bundle/
 ```
 
-After linking, use `nexus init`, `nexus sync`, `nexus query`, etc. directly.
-
-#### Restart Claude Code
-
-After init, restart Claude Code so it picks up the new MCP server and hooks.
-
-### Option C: Build the Desktop App from Source
-
-Requires everything from Option B plus Rust/Cargo.
-
-```bash
-# Windows (from repo root)
-nexus-build.bat
-
-# Or manually:
-pnpm build
-pnpm --filter @nexus/server compile
-pnpm tauri:build
-```
-
-The installer lands at `packages/dashboard/src-tauri/target/release/bundle/nsis/Nexus_*-setup.exe`.
+New to the project? [`docs/GETTING_STARTED.md`](docs/GETTING_STARTED.md) is a five-minute walkthrough.
 
 ---
 
-## Running the Web Dashboard
+## How it fits together
 
-If you installed from source (Option B), you can run the dashboard without the desktop app:
-
-```bash
-# Production mode — serves the built dashboard at localhost:47340
-node packages/server/dist/index.js
-
-# Dev mode — Vite hot-reload on :5173, API server on :47340
-pnpm -r dev
+```
+packages/
+  core/       — types, encrypted database, extraction, sync    (no CLI/server code)
+  cli/        — the `nexus` command
+  mcp/        — the nexus_* tools Claude Code calls
+  server/     — local HTTP API on 127.0.0.1:47340
+  dashboard/  — React UI + Tauri desktop shell
 ```
 
-Open [http://localhost:47340](http://localhost:47340) (production) or [http://localhost:5173](http://localhost:5173) (dev).
-
-The server binds to `127.0.0.1` by default. To change the port or bind address:
-
-```bash
-node packages/server/dist/index.js --port 8080 --bind 0.0.0.0
-```
+`core` is the only place that touches the database. `cli` and `mcp` depend on it and never
+on each other. The dashboard talks HTTP, never imports `core` directly.
 
 ---
 
-## CLI Commands
+## Using it
+
+Most of Nexus is meant to disappear — sessions get processed by a hook and context arrives
+in `CLAUDE.md` on its own. The command line is there when you want to look directly.
 
 ```bash
-# Initialize Nexus (first time setup)
-nexus init
-
-# Project management
-nexus project add <path>          # Register a project
-nexus project list                # List all registered projects
-nexus project show <id|name>      # Show project details
-nexus project remove <id|name>    # Unregister a project
-
-# Decisions
-nexus decision add                # Record an architectural decision
-nexus decision list [project]     # List decisions
-
-# Search
-nexus query <text>                # Full-text search across all knowledge
-
-# CLAUDE.md sync
-nexus sync                        # Sync current project's CLAUDE.md
-nexus sync --all                  # Sync all registered projects
-
-# Hook integration
-nexus hook post-session           # Process a completed Claude Code session
-                                  # (pipe session transcript via stdin)
-
-# Status
-nexus status                      # Show Nexus health + DB stats
+nexus status                  # health and database stats
+nexus query <text>            # search everything you've recorded
+nexus project add <path>      # start tracking a repo
+nexus sync --all              # rewrite every project's CLAUDE.md
+nexus db proposals            # review decisions flagged as possibly out of date
+nexus doctor                  # diagnose a broken install
 ```
 
----
+### Tools Claude can call
 
-## MCP Server
+| Tool | What it does |
+|------|--------------|
+| `nexus_query` | Search decisions, patterns, preferences, and notes |
+| `nexus_decide` | Record an architectural decision |
+| `nexus_pattern` | Search or record a code pattern |
+| `nexus_note` | Keep living project context that syncs into `CLAUDE.md` |
+| `nexus_check_conflicts` | Find cross-project contradictions |
+| `nexus_check_impact` | Trace the blast radius of a proposed change |
+| `nexus_dependencies` | Query the cross-project dependency graph |
+| `nexus_preferences` | Read and set developer preferences |
+| `nexus_supersede` | Accept or reject a flagged stale decision |
+| `nexus_budget` | Set spending limits and alerts |
 
-Add Nexus to your Claude Code MCP configuration to give Claude direct access to the knowledge graph:
+Registering the MCP server by hand, if `init` didn't:
 
 ```json
 {
   "mcpServers": {
-    "nexus": {
-      "command": "node",
-      "args": ["/path/to/Nexus/packages/mcp/dist/index.js"]
-    }
+    "nexus": { "command": "node", "args": ["/path/to/Nexus/packages/mcp/dist/index.js"] }
   }
 }
 ```
 
-Available MCP tools:
+### The dashboard
 
-| Tool | Description |
-|------|-------------|
-| `nexus_query` | Full-text search across decisions, patterns, preferences, notes |
-| `nexus_decide` | Record an architectural decision |
-| `nexus_pattern` | Search or record code patterns (action: `search` \| `record`) |
-| `nexus_check_conflicts` | Detect cross-project conflicts |
-| `nexus_dependencies` | Query the cross-project dependency graph |
-| `nexus_preferences` | Get, set, or list developer preferences (global or project-scoped) |
-| `nexus_note` | Manage project notes that persist in CLAUDE.md |
-| `nexus_check_impact` | Analyze downstream impact of a proposed change across related projects |
-| `nexus_budget` | Manage spending budgets and alerts with daily/weekly/monthly cost limits |
-
----
-
-## Configuration
-
-Config lives at `~/.nexus/config.json`. Created by `nexus init` — you can also edit it directly:
-
-```jsonc
-{
-  "encryptionKey": "...",           // Auto-generated — DO NOT LOSE
-
-  // LLM provider for extraction (pick one)
-  "llmProvider": "anthropic",       // "anthropic" | "openrouter" | "ollama"
-  "anthropicApiKey": "sk-ant-...",  // Optional — omit to use Claude Code OAuth
-  "anthropicBaseUrl": "...",        // Optional — custom Anthropic endpoint
-
-  "openrouterApiKey": "sk-or-...", // Required if provider is "openrouter"
-  "openrouterModel": "anthropic/claude-haiku-4-5",
-
-  "ollamaBaseUrl": "http://localhost:11434",  // Required if provider is "ollama"
-  "ollamaModel": "llama3.1:8b",
-
-  // Optional observability
-  "langfuse": {
-    "baseUrl": "https://your-langfuse-host",
-    "publicKey": "pk-lf-...",
-    "secretKey": "sk-lf-..."
-  }
-}
-```
-
-### Native Session Observability
-
-The Observability dashboard works out of the box with **no configuration**. Nexus reads Claude Code's JSONL session files directly from `~/.claude/projects/` and surfaces:
-
-- Session list with project, branch, duration, user turns, tool call count
-- Inline event timeline per session — text messages, tool calls (expandable with JSON input), and tool results
-- Aggregate stats: total sessions, user turns, tool calls, active projects
-
-### Langfuse Integration (optional)
-
-If you run a self-hosted [Langfuse](https://langfuse.com) instance, add credentials to `~/.nexus/config.json` to unlock LLM cost and token data. The Nexus server proxies Langfuse API calls, and the dashboard displays:
-
-- Daily cost and usage metrics
-- Full trace list with latency, cost, scores
-- Session groupings
-- Per-trace observation tree with input/output viewer
-
----
-
-## Dashboard Pages
-
-| Page | Description |
-|------|-------------|
-| **Overview** | Stats cards, recent decisions, active conflicts |
-| **Projects** | Project list + per-project decisions, patterns, notes, graph |
-| **Decisions** | Decision graph with cross-project relationship visualization |
-| **Patterns** | Searchable pattern library with frequency bars |
-| **Notes** | Freeform context per project; synced into CLAUDE.md |
-| **Conflicts** | Open, potential, and resolved cross-project conflicts |
-| **Preferences** | Global and per-project preference editor |
-| **Search** | Full-text search across all knowledge |
-| **Analytics** | Nexus usage analytics — extraction rates, tool effectiveness, project activity |
-| **Tokens** | Token audit — CLAUDE.md budget tracking per project |
-| **Budget Alerts** | Spending budgets with daily/weekly/monthly cost limits and alerts |
-| **Observability** | LLM observability — native Claude Code sessions + optional Langfuse traces/cost charts |
-| **Sessions** | Session audit — browse all Claude Code sessions with event timelines and tool inspection |
-| **Context Explorer** | Story-driven session replay with efficiency analysis |
-| **Session Insights** | Aggregate session analytics — trends, patterns, project breakdown |
-| **Claude Config** | Unified view of all Claude Code configuration — settings, MCP servers, rules, skills, agents, hooks, permissions |
-| **Health** | System health checks — DB, MCP, hooks, extraction pipeline status |
-| **Settings** | Server bind mode, autostart on login, port display |
+The desktop app opens it for you. From source, `node packages/server/dist/index.js` serves it
+at [localhost:47340](http://localhost:47340), bound to loopback only. It covers your project
+portfolio, a decision graph, the pattern library, conflicts, token budgets, health checks, and
+a session browser that reads Claude Code's own transcripts with no configuration at all.
 
 ---
 
 ## Security
 
-- Database is **always** SQLCipher-encrypted — `~/.nexus/nexus.db` is never plain SQLite
-- Secret filter runs on all content before it touches the DB — false positives preferred over leaks
-- Session transcripts are never stored — only extracted metadata (decisions, patterns, paths)
-- No network calls from `core`, `cli`, or `mcp` except the configured Anthropic API for extraction
+Nexus reads your session transcripts, so the design assumes they contain things you would
+not want leaked.
+
+- **The database is encrypted, and that is verified rather than assumed.** Nexus opens
+  `~/.nexus/nexus.db` through SQLCipher and refuses to proceed against a plaintext file.
+  (Early builds *claimed* encryption while a driver silently ignored the key. `nexus db status`
+  reports the truth, and `nexus db encrypt` converts an affected database.)
+- **The encryption key lives in your OS credential store**, not next to the data. Copying
+  `~/.nexus` to another machine gets you ciphertext and nothing else. Older installs that kept
+  the key in `config.json` can move it with `nexus db secure-key`.
+- **Third-party credentials are never stored in config files.** Nexus asks a command you
+  configure — the same shape as a git credential helper — so keys stay in whatever store your
+  machine already has:
+  ```jsonc
+  { "secretCommand": ["my-secret-tool", "get"] }   // invoked with the secret's name appended
+  ```
+- **Transcripts are never stored.** Only extracted decisions, patterns, and file paths — and
+  everything passes a deliberately over-eager secret filter first, because a false positive
+  costs you a redacted string and a miss costs you a leaked key.
+- **Nothing phones home.** No telemetry, no accounts, no cloud. The only outbound calls are to
+  whichever model provider you configure for extraction — and Ollama keeps even that local.
+
+> **Back up your encryption key.** It is in your OS credential store under `nexus` /
+> `db-encryption-key`. Lose it and the database is unrecoverable — there is no reset, by design.
 
 ---
 
 ## Development
 
 ```bash
-# Build all packages
-pnpm build
-
-# Run tests (packages/core)
-cd packages/core && pnpm test
-
-# Lint
+pnpm build                          # all packages
+pnpm --filter @nexus/core test      # the suite that matters
 pnpm lint
-
-# Dev mode (all packages with watch)
-pnpm -r dev
 ```
 
-### Build a specific package
+Two integration tests spawn real Node processes instead of running in-process, and they look
+redundant until you know why: the test runner supplies a module shim that once hid a bug which
+broke every credential lookup in production while the suite stayed green. There is now one such
+test per module format. Please don't "simplify" them back.
 
-```bash
-pnpm --filter @nexus/core build
-pnpm --filter @nexus/server build
-pnpm --filter @nexus/dashboard build
-```
-
-### Build the desktop app
-
-```bash
-# Compile server sidecar + Tauri app
-cd packages/dashboard
-pnpm tauri:build
-```
-
-Requires Rust/Cargo. The build runs `pnpm build` (frontend) + `pnpm compile:server` (Node→exe via esbuild + pkg) before invoking Tauri.
-
----
-
-## Phase Status
-
-| Phase | Description | Status |
-|-------|-------------|--------|
-| 1 | Foundation — DB, CLI, secret filter | ✅ Complete |
-| 2 | MCP Server — 10 tools | ✅ Complete |
-| 3 | Hooks & LLM extraction | ✅ Complete |
-| 4 | CLAUDE.md sync engine | ✅ Complete |
-| 5 | HTTP server + React dashboard + Notes | ✅ Complete |
-| 6 | Tauri desktop app + sidecar server | ✅ Complete |
+Contributions are welcome. The house rules are in [`CLAUDE.md`](CLAUDE.md) — the short version
+is that encryption, the secret filter, and the local-only boundary are not negotiable.
 
 ---
 
 ## License
 
-MIT
+MIT — see [LICENSE](LICENSE).
