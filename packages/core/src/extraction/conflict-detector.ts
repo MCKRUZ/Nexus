@@ -1,14 +1,17 @@
 /**
- * Portfolio-level conflict & advisory detection engine.
+ * Portfolio-level conflict detection engine.
  *
- * Replaces the old pairwise comparison with a single batched LLM call
- * that analyzes one focus project against the entire portfolio.
+ * A single batched LLM call analyzes one focus project against the whole
+ * portfolio, looking for genuine incompatibilities between projects that share
+ * code or infrastructure. Rare and high signal by design — returning nothing is
+ * the expected outcome most of the time.
  *
- * Two tiers:
- *   - **Advisories** (info): Cross-project knowledge recommendations.
- *     "You configured SSH tunneling in openclaw — this applies to ProjectPrism too."
- *   - **Conflicts** (warning): Genuine incompatibilities between projects
- *     that share code/infrastructure. Rare, high signal.
+ * It also used to emit "advisories": knowledge-transfer suggestions at info
+ * severity. That tier was retired after producing ~12,900 records that were
+ * never read, because a suggestion with no occasion to appear has nowhere to go.
+ * Conflicts survive because the prompt hook gives them one — it raises them when
+ * the user asks something they bear on. Existing advisory rows are kept and
+ * marked dismissed; nothing new is generated.
  */
 
 import { readConfig } from '../config/index.js';
@@ -70,45 +73,43 @@ export function areProjectsRelated(a: ProjectInfo, b: ProjectInfo): boolean {
   return false;
 }
 
+/*
+ * This used to ask for "advisories" as well — knowledge-transfer suggestions,
+ * up to five per run. It produced 12,933 of them over three months and not one
+ * was ever read or dismissed, because a recommendation with no occasion attached
+ * has nowhere useful to appear. Conflicts do have an occasion: the prompt hook
+ * raises them when the user asks something they bear on.
+ *
+ * Asking for both cost tokens on every run to generate half an answer that was
+ * discarded, so the advisory half is gone from the prompt, not just from the
+ * parsing. Existing advisory rows are retained and marked dismissed.
+ */
 const PORTFOLIO_SYSTEM = `You are a cross-project intelligence analyzer for a developer's project portfolio.
 
 You will receive a FOCUS PROJECT with its architectural decisions, and a PORTFOLIO of other projects with their key decisions.
 
-Your job is to produce TWO types of insights:
+Your job is to find CONFLICTS: genuine incompatibilities where two projects that
+share code or infrastructure have made choices that cannot both hold.
 
-## ADVISORIES (knowledge transfer)
-Useful knowledge from one project that applies to another. These are RECOMMENDATIONS, not problems.
-Examples:
-- "Project A configured SSH tunneling — this technique applies to Project B's deployment too"
-- "Project A chose Zod for validation — Project B currently has no validation library"
-- "Project A's caching pattern could improve Project B's API performance"
+These should be RARE and HIGH SIGNAL. Returning none is the normal outcome and is
+always better than padding the list.
 
-Rules for advisories:
-- Must reference specific decisions, not vague technology overlap
-- Must be actionable — the developer can do something with this info
-- Maximum 5 advisories
-
-## CONFLICTS (genuine incompatibilities)
-Real problems where two projects that share code or infrastructure have made incompatible choices.
-These should be RARE and HIGH SIGNAL.
-
-Rules for conflicts:
+Rules:
 - Only flag if the projects actually interoperate or share dependencies
 - Different tech stacks in independent projects are NOT conflicts
 - Must cause actual breakage or maintenance burden
+- Do NOT report knowledge-transfer suggestions, similarities, or opportunities —
+  only incompatibilities
 - Maximum 3 conflicts
 
 Respond with JSON only:
 {
-  "advisories": [
-    { "description": "One sentence: what knowledge transfers and why it's useful.", "projectIds": ["id1", "id2"], "severity": "info" }
-  ],
   "conflicts": [
     { "description": "One sentence: what conflicts and why it breaks.", "projectIds": ["id1", "id2"], "severity": "high|medium|low" }
   ]
 }
 
-If there are no insights, respond: { "advisories": [], "conflicts": [] }`;
+If there are no conflicts, respond: { "conflicts": [] }`;
 
 export interface PortfolioAnalysisResult {
   insights: DetectedInsight[];
@@ -167,21 +168,10 @@ export async function analyzePortfolio(input: PortfolioAnalysisInput): Promise<P
     if (!jsonMatch) return { insights: [], llmUsage };
 
     const parsed = JSON.parse(jsonMatch[0]) as {
-      advisories?: Array<{ description: string; projectIds?: string[]; severity?: string }>;
       conflicts?: Array<{ description: string; projectIds?: string[]; severity?: string }>;
     };
 
     const insights: DetectedInsight[] = [];
-
-    for (const a of (parsed.advisories ?? []).slice(0, 5)) {
-      insights.push({
-        description: a.description,
-        projectIds: a.projectIds ?? [input.focusProject.id],
-        tier: 'advisory',
-        severity: 'info',
-      });
-    }
-
     const validSeverities = ['critical', 'high', 'medium', 'low'];
     for (const c of (parsed.conflicts ?? []).slice(0, 3)) {
       insights.push({

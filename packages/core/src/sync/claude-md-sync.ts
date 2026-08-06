@@ -190,11 +190,8 @@ function buildLines(input: SyncInput, opts: {
       lines.push('');
     }
 
-    const openAdvisories = input.conflicts.filter((c) => !c.resolvedAt && c.tier === 'advisory');
-    if (openAdvisories.length > 0) {
-      lines.push(`*${openAdvisories.length} cross-project advisor${openAdvisories.length === 1 ? 'y' : 'ies'} — run \`nexus query\` for details*`);
-      lines.push('');
-    }
+    // The advisory count used to be reported here. The tier is retired: it spent
+    // a line of everyone's context budget saying a number nobody acted on.
   }
 
   // ── Budget Alerts ──────────────────────────────────────────────────────────

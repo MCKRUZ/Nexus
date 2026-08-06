@@ -22,6 +22,7 @@ import {
   writeKeyToKeychain,
   deleteKeyFromKeychain,
   resolveEncryptionKey,
+  NexusService,
 } from '@nexus/core';
 
 export function dbCommand(): Command {
@@ -160,6 +161,35 @@ export function dbCommand(): Command {
 
       log.info('Key moved to the OS credential store.');
       log.dim('  config.json no longer contains it — a copy of ~/.nexus is now inert.');
+    });
+
+  cmd
+    .command('retire-advisories')
+    .description('Close out the retired advisory tier (rows are kept, not deleted)')
+    .option('--dry-run', 'Report how many would be retired without changing anything')
+    .action((opts: { dryRun?: boolean }) => {
+      const svc = NexusService.open();
+      try {
+        const open = svc
+          .checkConflicts(svc.listProjects().map((p) => p.id))
+          .advisories.filter((a) => !a.resolvedAt);
+
+        if (open.length === 0) {
+          log.info('No open advisories — nothing to do.');
+          return;
+        }
+        if (opts.dryRun) {
+          log.warn(`${open.length} open advisories would be marked resolved.`);
+          log.dim('  The rows stay in the database; only resolved_at is set.');
+          return;
+        }
+
+        const count = svc.retireOpenAdvisories('cli');
+        log.info(`Retired ${count} advisories.`);
+        log.dim('  Rows kept with resolution "tier-retired" — reversible if you want them back.');
+      } finally {
+        svc.close();
+      }
     });
 
   return cmd;

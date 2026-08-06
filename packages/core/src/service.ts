@@ -46,7 +46,7 @@ import {
   setPreference,
   listPreferences,
 } from './repositories/preference.js';
-import { checkConflicts, createConflict, resolveConflict, dismissAdvisory, analyzeImpact } from './repositories/conflict.js';
+import { checkConflicts, createConflict, resolveConflict, dismissAdvisory, retireOpenAdvisories, analyzeImpact } from './repositories/conflict.js';
 import {
   findNotesByProject,
   findNoteById,
@@ -326,6 +326,11 @@ export class NexusService {
     source: 'cli' | 'mcp' | 'daemon' = 'cli',
   ): boolean {
     return dismissAdvisory(this.db, conflictId, source);
+  }
+
+  /** Retire every open advisory at once. See retireOpenAdvisories. */
+  retireOpenAdvisories(source: 'cli' | 'mcp' | 'daemon' = 'cli'): number {
+    return retireOpenAdvisories(this.db, source);
   }
 
   analyzeImpact(

@@ -259,6 +259,33 @@ export function dismissAdvisory(
   return false;
 }
 
+/**
+ * Retire every open advisory in one pass.
+ *
+ * The advisory tier is no longer generated. Its records are marked resolved
+ * rather than deleted: the rows are the only evidence of what the portfolio
+ * analyser thought over three months, they cost nothing to keep, and marking is
+ * reversible in a way that deleting is not.
+ *
+ * Returns how many were retired.
+ */
+export function retireOpenAdvisories(
+  db: NexusDb,
+  source: 'cli' | 'mcp' | 'daemon' = 'cli',
+): number {
+  const result = db
+    .prepare(
+      `UPDATE conflicts SET resolved_at = ?, resolution = ?
+        WHERE tier = 'advisory' AND resolved_at IS NULL`,
+    )
+    .run(Date.now(), 'tier-retired');
+
+  if (result.changes > 0) {
+    auditLog(db, { operation: 'advisory.retire', source, meta: { count: String(result.changes) } });
+  }
+  return result.changes;
+}
+
 // ─── Impact Analysis ─────────────────────────────────────────────────────────
 
 function trunc(s: string, max: number): string {
