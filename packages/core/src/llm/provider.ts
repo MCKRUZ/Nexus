@@ -15,6 +15,15 @@ export interface ChatCompletionOptions {
   system: string;
   userMessage: string;
   maxTokens: number;
+  /**
+   * Override the configured model for this call.
+   *
+   * Nexus runs a cheap model for bulk extraction, which is the right trade when
+   * the job is pulling structure out of text. Some calls are judgement rather
+   * than extraction — deciding whether one decision makes another false — and
+   * there a cheap model is wrong often enough to do damage.
+   */
+  model?: string;
 }
 
 export interface ChatCompletionResult {

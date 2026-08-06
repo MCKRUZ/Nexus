@@ -260,7 +260,42 @@ export function hookCommand(): Command {
             // Never block session teardown
           }
 
-          // 3. Budget check — evaluate and log state transitions.
+          // 3. Retire decisions that later ones have overtaken.
+          //
+          // Runs BEFORE the sync so CLAUDE.md never publishes a decision that was
+          // retired moments earlier, and here rather than at the point of writing
+          // so it covers every route a decision arrives by — the extractor, the
+          // MCP tool and the CLI all land in the same table.
+          //
+          // Gated on this run having recorded something. With no new decisions
+          // there is nothing to reconcile, and each examination costs a model call.
+          // DISABLED pending a fix. The first live run collapsed chains: each
+          // decision retired its predecessor, every link individually defensible,
+          // and the chain terminated on an unrelated decision — leaving nothing
+          // in the base that stated where the database key lives. Re-enable only
+          // once the adjudicator refuses restatements and chaining is blocked.
+          const RECONCILE_ENABLED = false;
+          try {
+            if (RECONCILE_ENABLED && !opts.dryRun && recordedSomethingNew) {
+              const since = svc.getLastReconcileRunAt(project.id) ?? 0;
+              const reconciled = await svc.reconcileDecisions(project.id, since, 'daemon');
+              svc.emitPipelineEvent(project.id, 'pipeline.reconcile.run', {
+                examined: String(reconciled.examined),
+                superseded: String(reconciled.superseded),
+              });
+              if (reconciled.superseded > 0) {
+                output(`Retired ${reconciled.superseded} superseded decision(s)`);
+              }
+            } else if (!opts.dryRun) {
+              svc.emitPipelineEvent(project.id, 'pipeline.reconcile.skip', {
+                reason: 'No new decisions recorded this run',
+              });
+            }
+          } catch {
+            // Best-effort, like every other stage here — never block teardown.
+          }
+
+          // 4. Budget check — evaluate and log state transitions.
           // Runs BEFORE the sync so any active alert rides along in a single
           // CLAUDE.md write instead of triggering a second one.
           let budgetResults: BudgetCheckResult[] = [];
@@ -284,7 +319,7 @@ export function hookCommand(): Command {
             // Budget check is best-effort — never block session teardown
           }
 
-          // 4. Sync CLAUDE.md once so notes/decisions are ready for the next session
+          // 5. Sync CLAUDE.md once so notes/decisions are ready for the next session
           try {
             if (!opts.dryRun) {
               svc.emitPipelineEvent(project.id, 'pipeline.sync.start');
@@ -305,7 +340,7 @@ export function hookCommand(): Command {
             // Sync is best-effort — never block session teardown
           }
 
-          // 5. Portfolio-level conflict & advisory detection (single LLM call).
+          // 6. Portfolio-level conflict detection (single LLM call).
           // Gated: with unchanged inputs this re-derives the same advisories every
           // stop, which dedup then discards. Run it when this session actually
           // added something, or when enough time has passed that another project

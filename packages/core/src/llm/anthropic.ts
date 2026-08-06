@@ -32,8 +32,9 @@ export function createAnthropicProvider(config: NexusConfig): LlmProvider {
     name: 'anthropic',
 
     async chatCompletion(opts: ChatCompletionOptions): Promise<ChatCompletionResult> {
+      const effectiveModel = opts.model ?? model;
       const message = await client.messages.create({
-        model,
+        model: effectiveModel,
         max_tokens: opts.maxTokens,
         system: opts.system,
         messages: [{ role: 'user', content: opts.userMessage }],
@@ -47,7 +48,7 @@ export function createAnthropicProvider(config: NexusConfig): LlmProvider {
           inputTokens: message.usage.input_tokens,
           outputTokens: message.usage.output_tokens,
         },
-        model,
+        model: effectiveModel,
       };
     },
   };

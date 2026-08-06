@@ -21,6 +21,8 @@ export type PipelineEvent =
   | 'pipeline.sync.fail'
   | 'pipeline.portfolio.run'
   | 'pipeline.portfolio.skip'
+  | 'pipeline.reconcile.run'
+  | 'pipeline.reconcile.skip'
   | 'pipeline.llm.call';
 
 // ─── Emit ───────────────────────────────────────────────────────────────────
@@ -46,6 +48,23 @@ export function emitPipelineEvent(
  * re-derives the same advisories from unchanged inputs, so callers use this to
  * rate-limit it when nothing new has been recorded.
  */
+/**
+ * When decision reconciliation last ran for a project, or null if never.
+ *
+ * Doubles as the watermark: only decisions recorded since then need examining,
+ * and each one costs a model call.
+ */
+export function getLastReconcileRunAt(db: NexusDb, projectId: string): number | null {
+  const row = db
+    .prepare(
+      `SELECT at FROM audit_log
+        WHERE operation = 'pipeline.reconcile.run' AND project_id = ?
+        ORDER BY at DESC LIMIT 1`,
+    )
+    .get(projectId) as { at: number } | undefined;
+  return row?.at ?? null;
+}
+
 export function getLastPortfolioRunAt(db: NexusDb, projectId: string): number | null {
   const row = db
     .prepare(

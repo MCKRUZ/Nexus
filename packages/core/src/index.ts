@@ -18,6 +18,7 @@ export * from './repositories/budget.js';
 export * from './repositories/extraction-state.js';
 export * from './repositories/prompt.js';
 export * from './advisories/relevance.js';
+export * from './decisions/supersession.js';
 export * from './advisories/prompt-hook.js';
 export * from './diagnostics/index.js';
 export * from './utils/index.js';

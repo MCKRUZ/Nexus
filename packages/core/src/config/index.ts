@@ -34,6 +34,15 @@ export interface NexusConfig {
   anthropicBaseUrl?: string;
   /** Anthropic model ID. Default: 'claude-haiku-4-5-20251001' */
   anthropicModel?: string;
+  /**
+   * Model used to judge whether one decision supersedes another.
+   *
+   * Defaults to a stronger model than the rest of the pipeline: this is a
+   * judgement call, not extraction, and getting it wrong silently removes a
+   * decision that is still true. Set to null to use the configured default
+   * model instead — appropriate for providers that offer nothing stronger.
+   */
+  supersessionModel?: string | null;
   /** Base URL for Ollama. Default: 'http://localhost:11434' */
   ollamaBaseUrl?: string;
   /** Ollama model name. Default: 'llama3.1:8b' */

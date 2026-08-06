@@ -78,7 +78,8 @@ import { computeTokenAnalytics, computeSpendForPeriod } from './native/token-ana
 import type { Project, Decision, Pattern, Preference, Conflict, Note, AuditEntry, ConflictTier, ConflictSeverity, ImpactResult, BudgetConfig, BudgetEvent, BudgetCheckResult } from './types/index.js';
 import type { DecisionKind } from './types/index.js';
 import { runDoctor, type DoctorReport } from './diagnostics/doctor.js';
-import { emitPipelineEvent, getPipelineStats, getLlmCosts, getLastPortfolioRunAt, type PipelineEvent, type PipelineStats, type LlmCostSummary } from './diagnostics/pipeline.js';
+import { emitPipelineEvent, getPipelineStats, getLlmCosts, getLastPortfolioRunAt, getLastReconcileRunAt, type PipelineEvent, type PipelineStats, type LlmCostSummary } from './diagnostics/pipeline.js';
+import { reconcileDecisions, type ReconcileResult } from './decisions/supersession.js';
 import { runDoctorFix, type DoctorFixResult } from './diagnostics/doctor-fix.js';
 import { syncClaudeMd } from './sync/claude-md-sync.js';
 import type { PortfolioEntry } from './sync/claude-md-sync.js';
@@ -481,6 +482,24 @@ export class NexusService {
   }
 
   /** Epoch ms of the last portfolio analysis for a project, or null if never. */
+  /**
+   * Retire decisions that later ones have overtaken.
+   *
+   * Only examines decisions recorded since the last run, because each one may
+   * cost a model call. See decisions/supersession.ts.
+   */
+  async reconcileDecisions(
+    projectId: string,
+    since: number,
+    source: 'cli' | 'mcp' | 'daemon' = 'daemon',
+  ): Promise<ReconcileResult> {
+    return reconcileDecisions(this.db, projectId, since, source);
+  }
+
+  getLastReconcileRunAt(projectId: string): number | null {
+    return getLastReconcileRunAt(this.db, projectId);
+  }
+
   getLastPortfolioRunAt(projectId: string): number | null {
     return getLastPortfolioRunAt(this.db, projectId);
   }
