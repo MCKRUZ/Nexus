@@ -261,7 +261,50 @@ const MIGRATIONS: Array<{ version: number; up: string }> = [
       CREATE INDEX IF NOT EXISTS idx_extraction_state_project ON extraction_state(project_id);
     `,
   },
+  {
+    // What the user actually asked for, captured as they ask it.
+    //
+    // Everything else Nexus knows is inferred after the fact from transcripts.
+    // This is the only record of intent in the user's own words, which is what
+    // makes it worth checking a request against past decisions before the work
+    // starts rather than explaining a collision afterwards.
+    //
+    // Prompts are the most sensitive thing stored here, so they are filtered for
+    // secrets before insertion and never leave the encrypted database.
+    version: 7,
+    up: `
+      CREATE TABLE IF NOT EXISTS prompts (
+        id          TEXT PRIMARY KEY,
+        project_id  TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+        session_key TEXT NOT NULL,
+        prompt      TEXT NOT NULL,
+        created_at  INTEGER NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_prompts_project ON prompts(project_id, created_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_prompts_session ON prompts(session_key, created_at DESC);
+    `,
+  },
 ];
+
+/** Schema version this build expects. */
+export const LATEST_SCHEMA_VERSION = MIGRATIONS[MIGRATIONS.length - 1]?.version ?? 0;
+
+/**
+ * Applied schema version, or 0 on a database that has never been migrated.
+ *
+ * A pure read: it takes no write lock, so callers on a latency budget can check
+ * whether migration is needed before paying for it.
+ */
+export function getSchemaVersion(db: NexusDb): number {
+  try {
+    const row = db
+      .prepare('SELECT MAX(version) as v FROM schema_version')
+      .get() as { v: number | null } | undefined;
+    return row?.v ?? 0;
+  } catch {
+    return 0; // schema_version table does not exist yet
+  }
+}
 
 export function migrateDatabase(db: NexusDb): void {
   db.exec(`

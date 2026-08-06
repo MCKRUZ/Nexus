@@ -3,8 +3,12 @@
  * Nexus MCP Server — Phase 2
  *
  * All 10 nexus_* tools are wired to @nexus/core via NexusService.
- * The server opens/closes the DB per request to avoid holding it open
- * across long idle periods.
+ *
+ * The server holds one connection for its lifetime. It used to open and close
+ * one per request, which was cheap against a plaintext database but costs about
+ * 190ms of key derivation now that the database is encrypted — paid on every
+ * tool call. The server is already scoped to a session, so a connection that
+ * lives as long as the process is the right lifetime.
  */
 
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
@@ -18,16 +22,72 @@ const server = new McpServer({
   description: 'Cross-project intelligence layer for Claude Code',
 });
 
+let service: NexusService | null = null;
+
+/** better-sqlite3 tags its errors with a SQLITE_* code; service-level errors have none. */
+function isSqliteError(err: unknown): boolean {
+  return (
+    typeof err === 'object' &&
+    err !== null &&
+    typeof (err as { code?: unknown }).code === 'string' &&
+    (err as { code: string }).code.startsWith('SQLITE_')
+  );
+}
+
 function withService<T>(fn: (svc: NexusService) => T): T {
   if (!isInitialized()) {
     throw new Error('Nexus is not initialized. Run `nexus init` in a terminal first.');
   }
-  const svc = NexusService.open();
+  service ??= NexusService.open();
   try {
-    return fn(svc);
-  } finally {
-    svc.close();
+    return fn(service);
+  } catch (err) {
+    // Ordinary failures (validation, not-found) leave the connection perfectly
+    // usable, and dropping it would cost a needless key derivation. Only a
+    // SQLite-level error suggests the handle itself is broken — most plausibly
+    // the database file having been replaced underneath us — and there the next
+    // call should reconnect rather than fail identically until restart.
+    if (isSqliteError(err)) {
+      try {
+        service?.close();
+      } catch {
+        // already unusable
+      }
+      service = null;
+    }
+    throw err;
   }
+}
+
+/** As withService, for the handful of tools whose work is asynchronous. */
+async function withServiceAsync<T>(fn: (svc: NexusService) => Promise<T>): Promise<T> {
+  if (!isInitialized()) {
+    throw new Error('Nexus is not initialized. Run `nexus init` in a terminal first.');
+  }
+  service ??= NexusService.open();
+  try {
+    return await fn(service);
+  } catch (err) {
+    if (isSqliteError(err)) {
+      try {
+        service?.close();
+      } catch {
+        // already unusable
+      }
+      service = null;
+    }
+    throw err;
+  }
+}
+
+/** Release the connection on shutdown so the WAL is checkpointed cleanly. */
+function closeService(): void {
+  try {
+    service?.close();
+  } catch {
+    // nothing useful to do while exiting
+  }
+  service = null;
 }
 
 // ─── nexus_query ─────────────────────────────────────────────────────────────
@@ -777,24 +837,19 @@ server.tool(
       }
 
       if (action === 'check') {
-        const svc = NexusService.open();
-        try {
-          const results = await svc.checkBudgets();
-          if (results.length === 0) {
-            return { content: [{ type: 'text', text: 'No budget alerts configured.' }] };
-          }
-
-          const lines = results.map((r) => {
-            const icon = r.status === 'critical' ? '🔴' : r.status === 'warning' ? '🟡' : '🟢';
-            const scope = r.projectName ?? 'Global';
-            const silenced = r.silenced ? ' [SILENCED]' : '';
-            return `${icon} **${r.configName}** (${scope}, ${r.period}): $${r.currentSpend.toFixed(2)} / $${r.critAt.toFixed(2)} (${Math.round(r.percentUsed)}%)${silenced}`;
-          });
-
-          return { content: [{ type: 'text', text: `## Budget Status\n\n${lines.join('\n')}` }] };
-        } finally {
-          svc.close();
+        const results = await withServiceAsync((svc) => svc.checkBudgets());
+        if (results.length === 0) {
+          return { content: [{ type: 'text', text: 'No budget alerts configured.' }] };
         }
+
+        const lines = results.map((r) => {
+          const icon = r.status === 'critical' ? '🔴' : r.status === 'warning' ? '🟡' : '🟢';
+          const scope = r.projectName ?? 'Global';
+          const silenced = r.silenced ? ' [SILENCED]' : '';
+          return `${icon} **${r.configName}** (${scope}, ${r.period}): $${r.currentSpend.toFixed(2)} / $${r.critAt.toFixed(2)} (${Math.round(r.percentUsed)}%)${silenced}`;
+        });
+
+        return { content: [{ type: 'text', text: `## Budget Status\n\n${lines.join('\n')}` }] };
       }
 
       if (action === 'silence') {
@@ -855,6 +910,16 @@ server.tool(
 // ─── Start ────────────────────────────────────────────────────────────────────
 
 async function main() {
+  // The connection outlives each request now, so it needs an explicit release:
+  // without one the WAL is left for the next opener to recover.
+  for (const signal of ['SIGINT', 'SIGTERM'] as const) {
+    process.on(signal, () => {
+      closeService();
+      process.exit(0);
+    });
+  }
+  process.on('exit', closeService);
+
   const transport = new StdioServerTransport();
   await server.connect(transport);
 }

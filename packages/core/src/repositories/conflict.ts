@@ -32,6 +32,31 @@ function rowToConflict(row: ConflictRow): Conflict {
   };
 }
 
+/**
+ * Open conflicts for one project, excluding advisories.
+ *
+ * `findOpenConflicts` loads every open row in the database and filters in
+ * JavaScript. That is fine for a report and much too slow for anything on a
+ * latency budget: this database holds roughly 13,000 open rows, of which about
+ * 200 are actual conflicts — the rest are `advisory`/`info` suggestions. Those
+ * are worth browsing and not worth interrupting someone for, so they are
+ * excluded here rather than filtered out downstream.
+ *
+ * The tier filter runs in SQL; the project filter runs in memory because
+ * project_ids is stored as JSON and cannot be indexed. That is cheap once the
+ * tier filter has done its work.
+ */
+export function findOpenConflictsForProject(db: NexusDb, projectId: string): Conflict[] {
+  const rows = db
+    .prepare(
+      `SELECT * FROM conflicts
+        WHERE resolved_at IS NULL AND tier = 'conflict'
+        ORDER BY detected_at DESC`,
+    )
+    .all() as ConflictRow[];
+  return rows.map(rowToConflict).filter((c) => c.projectIds.includes(projectId));
+}
+
 export function findOpenConflicts(db: NexusDb, projectIds?: string[]): Conflict[] {
   const rows = db
     .prepare('SELECT * FROM conflicts WHERE resolved_at IS NULL ORDER BY detected_at DESC')
