@@ -4,7 +4,7 @@ version = "0.1.0"
 description = "Nexus — Cross-Project Claude Code Intelligence"
 authors = ["Nexus Contributors"]
 license = "MIT"
-repository = "https://github.com/your-org/nexus"
+repository = "https://github.com/MCKRUZ/Nexus"
 edition = "2021"
 rust-version = "1.77.2"
 
@@ -27,6 +27,12 @@ tauri-plugin-process = "2"
 tauri-plugin-single-instance = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+# Reads the database key from the OS credential store. The bundled server ships
+# as a packed executable with no native credential module of its own, so the
+# desktop shell reads the key and passes it across when launching the server.
+# Same underlying library the Node side writes with (@napi-rs/keyring wraps it),
+# so both agree on where the entry lives.
+keyring = { version = "3", features = ["apple-native", "windows-native", "sync-secret-service"] }
 
 [features]
 # This feature is used for production builds or when a dev server is not specified.

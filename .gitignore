@@ -12,7 +12,9 @@ build/
 # Rust / Tauri
 target/
 packages/dashboard/src-tauri/target/
-packages/dashboard/src-tauri/binaries/*.exe
+# Compiled server sidecars — one per platform, rebuilt by `pnpm compile:server`
+packages/dashboard/src-tauri/binaries/*
+!packages/dashboard/src-tauri/binaries/.gitkeep
 
 # Environment & secrets
 .env

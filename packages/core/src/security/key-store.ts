@@ -12,6 +12,7 @@
  */
 
 import { createRequire } from 'node:module';
+import { pathToFileURL } from 'node:url';
 
 const DEFAULT_SERVICE_NAME = 'nexus';
 const KEY_NAME = 'db-encryption-key';
@@ -29,11 +30,34 @@ function serviceName(): string {
 
 /**
  * The keyring is a native module with no ESM entry point, so it has to be loaded
- * through CommonJS. A bare `require` is NOT available here — this package
- * compiles to ESM, where `require` is undefined and every lookup would fall
- * silently back to config.json. `createRequire` gives us a real one.
+ * through CommonJS. Getting a working `require` here is harder than it looks,
+ * because this module is consumed in two different forms:
+ *
+ *  - As ESM — the CLI, MCP server and hooks. A bare `require` is undefined, so
+ *    every lookup would fall silently back to config.json.
+ *  - Bundled into CommonJS — the desktop server sidecar. esbuild rewrites
+ *    `import.meta` to `{}` there, so `import.meta.url` is undefined and
+ *    `createRequire` throws at import time, killing the process on startup.
+ *
+ * Both failures have happened. Resolve a base path that exists in either form.
  */
-const nodeRequire = createRequire(import.meta.url);
+function moduleBaseUrl(): string {
+  const url: unknown = import.meta.url;
+  if (typeof url === 'string' && url.length > 0) return url;
+
+  // CommonJS bundle: `__filename` is a real module-scope value. `typeof` on an
+  // undeclared identifier is safe, so this does not throw under ESM.
+  if (typeof __filename === 'string' && __filename.length > 0) {
+    return pathToFileURL(__filename).href;
+  }
+
+  throw new Error(
+    'Cannot determine a module base path to load the OS credential store from. ' +
+      'The database key cannot be read without it.',
+  );
+}
+
+const nodeRequire = createRequire(moduleBaseUrl());
 
 /** Loaded lazily so environments without a credential store still import cleanly. */
 type KeyringEntry = {
@@ -94,7 +118,15 @@ export function deleteKeyFromKeychain(): boolean {
   }
 }
 
-export type KeySource = 'keychain' | 'config';
+export type KeySource = 'env' | 'keychain' | 'config';
+
+/**
+ * Environment variable carrying the key for processes that cannot reach the OS
+ * credential store themselves. The desktop app's bundled server is the reason
+ * this exists: it ships as a packed executable with no native credential module,
+ * so the desktop shell reads the key and hands it over when launching it.
+ */
+export const ENCRYPTION_KEY_ENV = 'NEXUS_ENCRYPTION_KEY';
 
 export interface ResolvedKey {
   key: string;
@@ -102,18 +134,23 @@ export interface ResolvedKey {
 }
 
 /**
- * Resolve the encryption key: OS credential store first, then the legacy
- * `config.json` value for installs that predate the credential store.
+ * Resolve the encryption key: an explicitly handed-over value first, then the OS
+ * credential store, then the legacy `config.json` value for installs that
+ * predate the credential store.
  */
 export function resolveEncryptionKey(configKey?: string): ResolvedKey {
+  const fromEnv = process.env[ENCRYPTION_KEY_ENV];
+  if (fromEnv && fromEnv.length > 0) return { key: fromEnv, source: 'env' };
+
   const fromKeychain = readKeyFromKeychain();
   if (fromKeychain) return { key: fromKeychain, source: 'keychain' };
 
   if (configKey && configKey.length > 0) return { key: configKey, source: 'config' };
 
   throw new Error(
-    'No database encryption key found. Expected one in the OS credential store ' +
-      `(${serviceName()}/${KEY_NAME}) or in ~/.nexus/config.json. Run \`nexus init\` ` +
+    `No database encryption key found. Expected one in ${ENCRYPTION_KEY_ENV}, in the ` +
+      `OS credential store (${serviceName()}/${KEY_NAME}), or in ~/.nexus/config.json. ` +
+      'Run `nexus init` ' +
       'if this is a new install, or restore the key if it was deleted — without it ' +
       'the database cannot be decrypted.',
   );

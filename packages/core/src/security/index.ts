@@ -8,6 +8,7 @@ export {
   writeKeyToKeychain,
   deleteKeyFromKeychain,
   resolveEncryptionKey,
+  ENCRYPTION_KEY_ENV,
   type KeySource,
   type ResolvedKey,
 } from './key-store.js';

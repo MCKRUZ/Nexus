@@ -9,6 +9,30 @@ use tauri_plugin_shell::{ShellExt, process::CommandEvent};
 
 const DEFAULT_PORT: u16 = 47340;
 
+/// Credential-store coordinates of the database key. Must match the Node side
+/// (`packages/core/src/security/key-store.ts`) exactly — both use keyring-rs, so
+/// the same service and entry names address the same credential.
+const KEYRING_SERVICE: &str = "nexus";
+const KEYRING_ENTRY: &str = "db-encryption-key";
+
+/// Reads the database encryption key so it can be handed to the server.
+///
+/// Returns `None` when the machine has no credential store, or when the key is
+/// still in `config.json` from an install that predates the credential store —
+/// in both cases the server resolves the key itself and this is not an error.
+fn read_encryption_key() -> Option<String> {
+    match keyring::Entry::new(KEYRING_SERVICE, KEYRING_ENTRY) {
+        Ok(entry) => match entry.get_password() {
+            Ok(key) if !key.is_empty() => Some(key),
+            _ => None,
+        },
+        Err(e) => {
+            eprintln!("[nexus] no credential store available: {e}");
+            None
+        }
+    }
+}
+
 /// Shared server state — tracks whether the server process is running.
 struct ServerState {
     child: Option<tauri_plugin_shell::process::CommandChild>,
@@ -22,13 +46,17 @@ fn spawn_server(
     bind_all: bool,
 ) -> Result<tauri_plugin_shell::process::CommandChild, String> {
     let bind_address = if bind_all { "0.0.0.0" } else { "127.0.0.1" };
-    let (mut rx, child) = app
+    let mut command = app
         .shell()
         .sidecar("nexus-server")
         .map_err(|e| e.to_string())?
-        .args(["--port", &port.to_string(), "--bind", bind_address])
-        .spawn()
-        .map_err(|e| e.to_string())?;
+        .args(["--port", &port.to_string(), "--bind", bind_address]);
+
+    if let Some(key) = read_encryption_key() {
+        command = command.env("NEXUS_ENCRYPTION_KEY", key);
+    }
+
+    let (mut rx, child) = command.spawn().map_err(|e| e.to_string())?;
 
     // Forward sidecar stderr to the frontend as Tauri events
     let handle = app.clone();

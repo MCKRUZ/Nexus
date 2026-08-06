@@ -1,0 +1,122 @@
+# Builds the desktop installers for every supported platform and attaches them
+# to a GitHub release.
+#
+# Each installer contains a real native binary, so each one has to be built on
+# its own operating system — a Windows machine cannot produce a macOS app. That
+# is the entire reason this workflow exists rather than a local build script.
+
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag to build and publish (e.g. v0.1.0)'
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: macos-latest
+            target: aarch64-apple-darwin
+            label: macOS (Apple Silicon)
+          - platform: macos-13
+            target: x86_64-apple-darwin
+            label: macOS (Intel)
+          # Pinned rather than ubuntu-latest: the AppImage links against the
+          # glibc of the machine that built it, so a newer runner would produce
+          # a binary that refuses to start on older distributions.
+          - platform: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+            label: Linux
+          - platform: windows-latest
+            target: x86_64-pc-windows-msvc
+            label: Windows
+
+    name: ${{ matrix.label }}
+    runs-on: ${{ matrix.platform }}
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
+
+      - name: Install Linux build dependencies
+        if: matrix.platform == 'ubuntu-22.04'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libappindicator3-dev \
+            librsvg2-dev \
+            patchelf \
+            build-essential \
+            file
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Cache Rust build
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: packages/dashboard/src-tauri -> target
+          key: ${{ matrix.target }}
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build packages and compile the server sidecar
+        # The sidecar is a standalone executable of the Nexus HTTP server. Its
+        # filename must carry the Rust target triple or the bundler will not
+        # find it; `compile:server` reads that from the installed toolchain.
+        run: |
+          pnpm build
+          pnpm --filter @nexus/server compile
+
+      - name: Run tests
+        # A release that fails its own suite should never reach a download page.
+        run: pnpm --filter @nexus/core test
+
+      - uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          projectPath: packages/dashboard
+          tagName: ${{ github.event.inputs.tag || github.ref_name }}
+          releaseName: 'Nexus ${{ github.event.inputs.tag || github.ref_name }}'
+          releaseDraft: true
+          prerelease: false
+          args: --target ${{ matrix.target }}
+          releaseBody: |
+            Desktop installers for Nexus.
+
+            **The installers are not code-signed.** Signing certificates cost
+            money per platform and this is a local-first tool with no vendor
+            behind it, so the operating system will warn you on first launch:
+
+            - **Windows** — SmartScreen shows "Windows protected your PC".
+              Choose *More info* → *Run anyway*.
+            - **macOS** — Gatekeeper refuses to open it. Right-click the app and
+              choose *Open*, then confirm.
+
+            Prefer not to trust an unsigned binary? Build from source instead —
+            see the README. That is the honest recommendation.

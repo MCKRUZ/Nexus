@@ -34,6 +34,7 @@
   "devDependencies": {
     "@types/better-sqlite3": "^7.6.0",
     "@types/node": "^20.0.0",
+    "esbuild": "^0.25.12",
     "rimraf": "^5.0.0",
     "typescript": "^5.5.0",
     "vitest": "^2.0.0"

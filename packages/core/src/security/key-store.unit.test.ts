@@ -17,6 +17,31 @@ const STORED_KEY = 'key-held-in-os-credential-store';
 
 afterEach(() => {
   if (isKeychainAvailable()) deleteKeyFromKeychain();
+  delete process.env['NEXUS_ENCRYPTION_KEY'];
+});
+
+describe('key supplied through the environment', () => {
+  // The desktop app's server runs as a packed executable with no access to the
+  // OS credential store. The desktop shell reads the key and passes it in, so
+  // this path is the only way that server can open the database.
+  const ENV_KEY = 'key-handed-over-by-the-desktop-shell';
+
+  it('is preferred over both the credential store and config.json', () => {
+    if (isKeychainAvailable()) writeKeyToKeychain(STORED_KEY);
+    process.env['NEXUS_ENCRYPTION_KEY'] = ENV_KEY;
+
+    const resolved = resolveEncryptionKey(CONFIG_KEY);
+    expect(resolved.key).toBe(ENV_KEY);
+    expect(resolved.source).toBe('env');
+  });
+
+  it('is ignored when empty, rather than masking a real key', () => {
+    process.env['NEXUS_ENCRYPTION_KEY'] = '';
+
+    const resolved = resolveEncryptionKey(CONFIG_KEY);
+    expect(resolved.key).toBe(CONFIG_KEY);
+    expect(resolved.source).toBe('config');
+  });
 });
 
 describe('resolveEncryptionKey', () => {
