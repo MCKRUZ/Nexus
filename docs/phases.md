@@ -82,7 +82,17 @@ Track current phase here. Update when transitioning.
 - [x] Settings page (launch-at-login, theme, server mode, Claude root)
 
 ### Open Source Release
-- [ ] Windows MSI installer (Tauri bundler)
-- [ ] macOS DMG (Tauri bundler)
-- [ ] Linux .deb + .AppImage (Tauri bundler)
-- [ ] README overhaul with install badges
+- [x] Windows MSI + NSIS installer — built and verified locally
+- [x] macOS DMG (Intel + Apple Silicon) — configured; built by CI, never locally
+- [x] Linux .deb + .AppImage — configured; built by CI, never locally
+- [x] Cross-platform sidecar compile (target triple read from the toolchain)
+- [x] `.github/workflows/release.yml` — tag push builds all four and drafts a release
+- [x] README overhaul with install badges
+- [ ] Cut the first tag and confirm CI produces all four installers
+- [ ] Decide whether to publish screenshots (they show real project names)
+- [ ] Optional: code-signing certificates — installers are unsigned and warn on
+      first launch on Windows and macOS
+
+**Only Windows can be built on the dev machine.** Every installer contains a
+native binary for its own OS, so macOS and Linux exist only via CI. The workflow
+is written and valid but unproven until a tag is pushed.
