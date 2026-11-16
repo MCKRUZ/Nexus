@@ -11,7 +11,8 @@
  *
  * Hard limits:
  *  - Top 4 by score, only if score > 0
- *  - 8,000 chars total related content (truncate at project boundary)
+ *  - 8,000 chars total related content (a project that does not fit is
+ *    skipped whole; later, smaller projects can still fill the budget)
  */
 
 import type { Note } from '../types/index.js';
@@ -30,7 +31,14 @@ const STOP_WORDS = new Set([
   'when', 'where', 'who', 'which', 'what', 'then', 'than', 'also',
   // Common tech stop words
   'use', 'used', 'using', 'new', 'get', 'set', 'run', 'add', 'via',
-  'code', 'data', 'file', 'api', 'app', 'type', 'see', 'note', 'run',
+  'code', 'data', 'file', 'api', 'app', 'type', 'see', 'note',
+  // Common Spanish (accent-free: tokenize() strips diacritics first)
+  'que', 'para', 'con', 'los', 'las', 'del', 'una', 'uno', 'unos', 'unas',
+  'por', 'como', 'mas', 'pero', 'sus', 'les', 'este', 'esta', 'estos',
+  'estas', 'ese', 'esa', 'eso', 'esto', 'son', 'fue', 'ser', 'hay', 'muy',
+  'sin', 'sobre', 'entre', 'cuando', 'donde', 'tambien', 'todo', 'todos',
+  'nos', 'ella', 'ellos', 'porque', 'desde', 'hasta', 'cada', 'otro', 'otra',
+  'sea', 'tiene', 'tienen', 'han', 'era', 'solo', 'asi', 'cual', 'segun',
 ]);
 
 // BM25 parameters
@@ -54,10 +62,14 @@ interface ScoredCandidate {
 
 // ─── Tokenizer ────────────────────────────────────────────────────────────────
 
-function tokenize(text: string): string[] {
+export function tokenize(text: string): string[] {
   return text
     .toLowerCase()
-    .replace(/[^a-z0-9\s]/g, ' ')
+    // Fold diacritics so Spanish words stay whole ("diseño" -> "diseno")
+    // and accented / unaccented spellings of a word match each other.
+    .normalize('NFD')
+    .replace(/\p{M}/gu, '')
+    .replace(/[^\p{L}\p{N}\s]/gu, ' ')
     .split(/\s+/)
     .filter((t) => t.length > 2 && !STOP_WORDS.has(t));
 }
@@ -208,7 +220,9 @@ export function selectRelevantProjects(
       (s, n) => s + n.title.length + n.content.length,
       0,
     );
-    if (charCount + projectChars > maxChars) break;
+    // Skip (not stop at) a project that does not fit: one oversized project
+    // must not shut out the smaller relevant ones ranked after it.
+    if (charCount + projectChars > maxChars) continue;
     charCount += projectChars;
     result.push({ projectName: item.projectName, notes: item.notes });
   }
