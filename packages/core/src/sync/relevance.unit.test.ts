@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { selectRelevantProjects } from './relevance.js';
+import { selectRelevantProjects, tokenize } from './relevance.js';
 import type { ProjectCandidate } from './relevance.js';
 import type { Note } from '../types/index.js';
 
@@ -204,5 +204,54 @@ describe('selectRelevantProjects', () => {
     const names = result.map((r) => r.projectName);
     // Related should appear and precede unrelated
     expect(names[0]).toBe('RelatedProject');
+  });
+
+  it('skips an oversized project instead of dropping every project after it', () => {
+    const parentId = 'parent-id';
+    const target = {
+      project: { id: 'child-id', parentId, tags: ['typescript'] },
+      notes: [makeNote({ title: 'TS', content: 'typescript api' })],
+    };
+    // Structural parent ranks first but alone exceeds the char budget.
+    const oversizedParent = makeCandidate(parentId, 'BigParent', [
+      makeNote({ content: 'typescript '.repeat(1000) }),
+    ]);
+    const small = makeCandidate(
+      'small-id',
+      'SmallSibling',
+      [makeNote({ title: 'Small', content: 'typescript api notes' })],
+      ['typescript'],
+    );
+    const result = selectRelevantProjects(target, [oversizedParent, small], { maxChars: 8000 });
+    const names = result.map((r) => r.projectName);
+    expect(names).not.toContain('BigParent');
+    expect(names).toContain('SmallSibling');
+  });
+});
+
+describe('tokenize', () => {
+  it('keeps Spanish words whole by folding accents', () => {
+    expect(tokenize('Decisión de diseño: tipografía Didot, año nuevo')).toEqual([
+      'decision',
+      'diseno',
+      'tipografia',
+      'didot',
+      'ano',
+      'nuevo',
+    ]);
+  });
+
+  it('drops common Spanish stop words', () => {
+    expect(tokenize('Paleta para la marca, según Juan, con los colores que elegimos')).toEqual([
+      'paleta',
+      'marca',
+      'juan',
+      'colores',
+      'elegimos',
+    ]);
+  });
+
+  it('matches accented and unaccented spellings of the same word', () => {
+    expect(tokenize('decisión')).toEqual(tokenize('decision'));
   });
 });
